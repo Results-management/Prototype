@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black" />
 <meta name="apple-mobile-web-app-title" content="Kituu Results" />
 <meta name="mobile-web-app-capable" content="yes" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   html,body,#root{margin:0;padding:0;background:#f4f4f4;}
   *{box-sizing:border-box;}
@@ -416,6 +417,18 @@ async function saveShared(key, data) {
   return await saveDB(db);
 }
 
+// A subject-teacher account's "classes" field can be the literal array of
+// {grade,stream} objects, or the sentinel string "ALL" meaning "every class
+// that currently exists" — expand that sentinel against the live class list.
+async function resolveUserClasses(classesField) {
+  if (classesField === "ALL") {
+    const cfg = (await loadShared("sision_classes_config", null)) || {"7":[""],"8":[""],"9":[""]};
+    return Object.entries(cfg).flatMap(([g, arr]) =>
+      (arr && arr.length ? arr : [""]).map(s => ({ grade: g, stream: s })));
+  }
+  return classesField || [];
+}
+
 // Safely merge one subject's scores into the shared marks list, by learner name,
 // without touching any other subject's scores. Re-fetches fresh data on every
 // attempt so two subject teachers saving at the same time can never wipe each
@@ -593,7 +606,7 @@ function LoginScreen({ onLogin }) {
       }
     } catch {}
     const session = { username: uname, role: entry.role, name: displayName,
-      classes: entry.classes || [], subjects: entry.subjects || [] };
+      classes: await resolveUserClasses(entry.classes), subjects: entry.subjects || [] };
     try { localStorage.setItem("sision_user_session", JSON.stringify(session)); } catch {}
     onLogin(session);
   }
@@ -1658,6 +1671,136 @@ function parseCSVText(text) {
   return rows.filter(r => r.some(c => c.trim() !== ""));
 }
 
+// ─── RESULTS ANALYSIS ──────────────────────────────────────────────────────
+function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, onClose }) {
+  const total = ranked.length;
+  const marked = ranked.filter(r => r.total > 0);
+  const passCount = marked.filter(r => r.level==="EE" || r.level==="ME").length;
+  const passRate = marked.length ? Math.round((passCount/marked.length)*100) : 0;
+
+  // Per-subject grade distribution
+  const subjectDist = {};
+  SUBJECTS.forEach(s => {
+    const counts = {EE:0, ME:0, AE:0, BE:0};
+    let n = 0;
+    ranked.forEach(r => {
+      const g = getGrade(r.scores[s]);
+      if (g) { counts[g.level]++; n++; }
+    });
+    subjectDist[s] = { counts, n };
+  });
+
+  const topPerformers = marked
+    .slice()
+    .sort((a,b)=>b.total-a.total)
+    .slice(0,5);
+
+  const box = { position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:1000,
+    display:"flex", alignItems:"center", justifyContent:"center", padding:12 };
+  const panel = { background:"#fff", borderRadius:14, padding:24, maxWidth:720, width:"100%",
+    maxHeight:"92vh", overflowY:"auto", boxShadow:"0 8px 40px rgba(0,0,0,0.3)" };
+  const h2 = { fontWeight:900, fontSize:18, borderBottom:"3px solid #000", paddingBottom:8, marginBottom:14 };
+  const sectionH = { fontWeight:800, fontSize:13, margin:"18px 0 8px", borderLeft:"4px solid #000", paddingLeft:8 };
+  const statGrid = { display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(90px,1fr))", gap:8, marginBottom:6 };
+  const statBox = { background:"#f4f4f4", borderRadius:8, padding:"10px 6px", textAlign:"center" };
+  const table = { width:"100%", borderCollapse:"collapse", fontSize:12 };
+  const th = { border:"1px solid #ddd", padding:"5px 6px", background:"#f0f0f0", fontSize:10.5, textTransform:"uppercase" };
+  const td = { border:"1px solid #ddd", padding:"5px 6px", textAlign:"center" };
+
+  return (
+    <div style={box} className="no-print">
+      <div style={panel}>
+        <div style={h2}>📊 Results Analysis — {label}</div>
+        <div style={{fontSize:12, color:"#666", marginTop:-8, marginBottom:14}}>{term} {year} · {marked.length} of {total} learner(s) with marks entered</div>
+
+        <div style={sectionH}>Overall Distribution</div>
+        <div style={statGrid}>
+          {["EE","ME","AE","BE"].map(lv=>(
+            <div key={lv} style={statBox}>
+              <div style={{fontWeight:900, fontSize:22}}>{levelCounts[lv]}</div>
+              <div style={{fontWeight:700, fontSize:11}}>{lv}</div>
+            </div>
+          ))}
+          <div style={statBox}>
+            <div style={{fontWeight:900, fontSize:22}}>{means["_classMean"]!=="–"?means["_classMean"]+"%":"–"}</div>
+            <div style={{fontWeight:700, fontSize:11}}>CLASS MEAN</div>
+          </div>
+          <div style={statBox}>
+            <div style={{fontWeight:900, fontSize:22}}>{passRate}%</div>
+            <div style={{fontWeight:700, fontSize:11}}>PASS RATE (ME+)</div>
+          </div>
+        </div>
+
+        <div style={sectionH}>Grade Distribution by Subject</div>
+        <div style={{overflowX:"auto"}}>
+          <table style={table}>
+            <thead>
+              <tr>
+                <th style={{...th,textAlign:"left"}}>Subject</th>
+                <th style={th}>Mean%</th>
+                <th style={th}>EE</th>
+                <th style={th}>ME</th>
+                <th style={th}>AE</th>
+                <th style={th}>BE</th>
+                <th style={th}>Marked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SUBJECTS.map(s=>(
+                <tr key={s}>
+                  <td style={{...td,textAlign:"left",fontWeight:700}}>{s}</td>
+                  <td style={td}>{means[s]}</td>
+                  <td style={td}>{subjectDist[s].counts.EE}</td>
+                  <td style={td}>{subjectDist[s].counts.ME}</td>
+                  <td style={td}>{subjectDist[s].counts.AE}</td>
+                  <td style={td}>{subjectDist[s].counts.BE}</td>
+                  <td style={td}>{subjectDist[s].n}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={sectionH}>Top 5 Performers</div>
+        {topPerformers.length === 0 ? (
+          <div style={{fontSize:12, color:"#888"}}>No marks entered yet.</div>
+        ) : (
+          <table style={table}>
+            <thead>
+              <tr>
+                <th style={th}>Rank</th>
+                <th style={{...th,textAlign:"left"}}>Name</th>
+                <th style={th}>Total</th>
+                <th style={th}>Avg%</th>
+                <th style={th}>Band</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topPerformers.map((l,i)=>{
+                const g = l.total>0 ? getGrade(l.avg) : null;
+                return (
+                  <tr key={l.name}>
+                    <td style={td}>{i+1}</td>
+                    <td style={{...td,textAlign:"left",fontWeight:700}}>{l.name}</td>
+                    <td style={td}>{l.total}</td>
+                    <td style={td}>{l.avg}%</td>
+                    <td style={td}>{g?g.sub:"–"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+
+        <div style={{display:"flex", justifyContent:"flex-end", marginTop:20}}>
+          <button style={{background:"#000",color:"#fff",border:"none",borderRadius:7,padding:"10px 24px",cursor:"pointer",fontSize:14,fontWeight:700}}
+            onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── PRINTABLE CLASS LIST ─────────────────────────────────────────────────────
 function PrintableClassList({ learners, grade, stream, term, year, classTeacher, hasScores, overallTotal, schoolName, schoolCounty }) {
   const label = getStreamLabel(grade, stream);
@@ -2135,6 +2278,23 @@ function App() {
   const [subjectYear, setSubjectYear]       = useState(()=>localStorage.getItem("sision_last_year")||"2026");
   const [subjectList, setSubjectList]       = useState([]); // [{name, score}]
   const [subjectLoading, setSubjectLoading] = useState(false);
+
+  // A returning subject-teacher session (e.g. after a page reload) restores
+  // userSession from localStorage but not subjectSession — rebuild it here.
+  // Defends against stale sessions saved before "classes" was always an array.
+  useEffect(() => {
+    if (userSession && userSession.role === "subjectTeacher" && !subjectSession) {
+      if (!Array.isArray(userSession.classes)) {
+        logout();
+        return;
+      }
+      setSubjectSession({
+        pin: userSession.username, name: userSession.name,
+        subjects: userSession.subjects || [], classes: userSession.classes || []
+      });
+      setPage("subjectClassPick");
+    }
+  }, [userSession]);
   const [subjectSaving, setSubjectSaving]   = useState(false);
   const [subjectSaved, setSubjectSaved]     = useState(false);
   const [subjectNotConnected, setSubjectNotConnected] = useState(false);
@@ -2208,6 +2368,8 @@ function App() {
   const [sortMode, setSortMode]             = useState("rank");
   const downloadRef = useRef(null);
   const csvInputRef = useRef(null);
+  const xlsxInputRef = useRef(null);
+  const [showAnalysis, setShowAnalysis] = useState(false);
 
   const currentStream = isSplitGrade(grade) ? stream : "";
 
@@ -2633,6 +2795,108 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
     }
   }
 
+  function handleDownloadTemplateExcel() {
+    const split = isSplitGrade(grade);
+    if (split && viewMode==="combined") {
+      alert("Please open a specific stream (not Combined) to download a class-specific template — each stream is stored separately.");
+      return;
+    }
+    const list = getLearnersByStream(stream);
+    const rows = list.map(l => {
+      const row = { "Name": l.name };
+      SUBJECTS.forEach(s => { row[s] = l.scores[s] || ""; });
+      return row;
+    });
+    const ws = rows.length
+      ? XLSX.utils.json_to_sheet(rows)
+      : XLSX.utils.aoa_to_sheet([["Name", ...SUBJECTS]]);
+    ws["!cols"] = [{wch:26}, ...SUBJECTS.map(()=>({wch:10}))];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Marks Template");
+    XLSX.writeFile(wb, `${getStreamLabel(grade,stream).replace(/\s/g,"_")}_MarksTemplate.xlsx`);
+  }
+
+  async function handleImportExcelFile(file) {
+    if (split && viewMode==="combined") {
+      alert("Please open a specific stream (not Combined) before importing — each stream is stored separately.");
+      return;
+    }
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, {type:"array"});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(ws, {defval:""});
+      if (!data.length) { alert("That workbook doesn't have any rows to import."); return; }
+      const headerKeys = Object.keys(data[0]);
+      const nameKey = headerKeys.find(h => h.trim().toUpperCase()==="NAME") || headerKeys[0];
+      const subjKey = {};
+      SUBJECTS.forEach(s=>{
+        const found = headerKeys.find(h => h.trim().toUpperCase()===s.toUpperCase());
+        if (found) subjKey[s] = found;
+      });
+      const list = [...getLearnersByStream(stream)];
+      let updated=0, added=0;
+      data.forEach(row => {
+        const rawName = String(row[nameKey]||"").trim();
+        if (!rawName) return;
+        const name = rawName.toUpperCase();
+        const newScores = {};
+        let any=false;
+        SUBJECTS.forEach(s=>{
+          if (subjKey[s]) {
+            const raw = row[subjKey[s]];
+            if (raw!==undefined && String(raw).trim()!=="") {
+              let v = Number(raw);
+              if (!isNaN(v)) { v = Math.max(0, Math.min(100, v)); newScores[s]=v; any=true; }
+            }
+          }
+        });
+        if (!any) return;
+        const idx = list.findIndex(l=>l.name===name);
+        if (idx>-1) { list[idx] = {...list[idx], scores:{...list[idx].scores,...newScores}}; updated++; }
+        else { list.push({name, scores:{...blankScores(),...newScores}}); added++; }
+      });
+      setLearnersByStream(stream, list);
+      setDirty(true);
+      alert(`Import complete: ${updated} learner(s) updated, ${added} new learner(s) added.`);
+    } catch (e) {
+      alert("Could not read that file. Please make sure it's an Excel workbook (.xlsx) with a Name column and subject columns.");
+    }
+  }
+
+  function handleDownloadExcel() {
+    const split = isSplitGrade(grade);
+    const list = split
+      ? (viewMode==="combined"
+          ? gradeCombined.combined
+          : (gradeCombined.perStream[stream] || []))
+      : (gradeCombined.perStream[currentClassList[0]] || []);
+    const rows = list.map((l,i) => {
+      const og = l.total>0?getGrade(l.avg):null;
+      const row = { "#": i+1, "Name": l.name, "Stream": l.stream||grade };
+      SUBJECTS.forEach(s => { row[s] = l.scores[s] || ""; });
+      row["Total"] = l.total||"";
+      row["Avg%"] = l.total?l.avg:"";
+      row["Points"] = l.total?l.points:"";
+      row["Band"] = og?og.sub:"";
+      row["Class Rank"] = l.total?l.rank:"";
+      if (split) row["Grade Rank"] = l.overallRank||"";
+      return row;
+    });
+    const meanRow = { "#":"", "Name":"CLASS MEAN", "Stream":"" };
+    SUBJECTS.forEach(s => { meanRow[s] = means[s]; });
+    meanRow["Total"]=""; meanRow["Avg%"]=""; meanRow["Points"]=""; meanRow["Band"]=""; meanRow["Class Rank"]="";
+    if (split) meanRow["Grade Rank"]="";
+    rows.push(meanRow);
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{wch:4},{wch:26},{wch:10}, ...SUBJECTS.map(()=>({wch:9})), {wch:8},{wch:8},{wch:8},{wch:8},{wch:10},{wch:10}];
+    const wb = XLSX.utils.book_new();
+    const lbl = split&&viewMode==="combined"?`${gradeLabel.replace(/\s/g,"")}_All`:getStreamLabel(grade,stream).replace(/\s/g,"_");
+    XLSX.utils.book_append_sheet(wb, ws, lbl.slice(0,28));
+    XLSX.writeFile(wb, `${lbl}_${term.replace(/\s/g,"_")}_${year}.xlsx`);
+  }
+
   function handleDownloadCSV() {
     const split = isSplitGrade(grade);
     const header = ["#","Name","Stream",...SUBJECTS,"Total","Avg%","Points","Band","Class Rank"];
@@ -2979,6 +3243,17 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             scopeLabel={isSplitGrade(grade) ? (viewMode==="combined"?`${gradeLabel} (All Classes)`:`${gradeLabel} ${stream}`) : `Grade ${grade}`}
             onSave={saveComment} onClose={()=>setShowComment(false)} />
         )}
+        {showAnalysis && (
+          <ResultsAnalysisModal
+            ranked={ranked}
+            levelCounts={levelCounts}
+            means={means}
+            label={label}
+            term={term}
+            year={year}
+            onClose={()=>setShowAnalysis(false)}
+          />
+        )}
 
         {/* TOP BAR */}
         <div style={S.topBar} className="no-print">
@@ -3012,6 +3287,12 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             <button style={S.ghostBtn} onClick={()=>csvInputRef.current?.click()}>📥 Import Marks (CSV)</button>
             <input ref={csvInputRef} type="file" accept=".csv" style={{display:"none"}}
               onChange={e=>{ const f=e.target.files?.[0]; if(f) handleImportFile(f); e.target.value=""; }} />
+            <button style={S.ghostBtn} onClick={handleDownloadExcel}>⬇ Excel (Filled)</button>
+            <button style={S.ghostBtn} onClick={handleDownloadTemplateExcel}>⬇ Excel (Blank Template)</button>
+            <button style={S.ghostBtn} onClick={()=>xlsxInputRef.current?.click()}>📥 Import Marks (Excel)</button>
+            <input ref={xlsxInputRef} type="file" accept=".xlsx,.xls" style={{display:"none"}}
+              onChange={e=>{ const f=e.target.files?.[0]; if(f) handleImportExcelFile(f); e.target.value=""; }} />
+            <button style={S.ghostBtn} onClick={()=>setShowAnalysis(true)}>📊 Results Analysis</button>
           </div>
         </div>
 

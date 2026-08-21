@@ -19,6 +19,17 @@ CSV import/export, and the Year Advancement Wizard for promoting learners.
 3. Settings → Pages → Deploy from branch → `main` / `root`. Your site will be at
    `https://<your-username>.github.io/<repo-name>/`.
 
+## Excel & Results Analysis (new)
+- **⬇ Excel (Filled)** and **⬇ Excel (Blank Template)** — genuine `.xlsx` files
+  (not just CSV) with the same columns as before, formatted with sensible
+  column widths.
+- **📥 Import Marks (Excel)** — bring a filled `.xlsx` template back in,
+  matching by learner name (case-insensitive), same as the CSV import.
+- **📊 Results Analysis** button — overall EE/ME/AE/BE distribution, class
+  mean, pass rate (ME and above), per-subject grade distribution and means,
+  and a Top 5 performers table. Opens as an overlay on the results screen.
+- CSV export/import is still there too — Excel is additional, not a replacement.
+
 ## School Settings & Manage Classes (new)
 Two new buttons appear in the header for admin only:
 - **🏫 School Settings** — edit the school name, county, and motto. This shows up
@@ -115,6 +126,12 @@ stream splitting anywhere.
   (Print → Save as PDF).
 - Never share your GitHub Personal Access Token outside the app's own
   "Database Settings" screen — not in chat, not in a public link.
+- Fixed in this build: subject-teacher logins (e.g. Mathematics, English, etc.)
+  were crashing to a blank white screen right after logging in. The bug was
+  in how those accounts' "can access every class" setting got read after the
+  Manage Classes rework — fixed, and confirmed subject-teacher login now
+  works end to end. If you still see a blank screen, it's almost certainly
+  the cached old version — clear site data once or check in a private tab.
 - Fixed in this build: the "Marks Template (CSV)" and "CSV" download buttons
   had a bug that would have made them fail — that's resolved now.
 - The Year Advancement Wizard now carries each class forward by name (e.g.
