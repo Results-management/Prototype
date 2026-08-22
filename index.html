@@ -332,7 +332,7 @@ var e,a,n="function"==typeof Symbol?Symbol:{},t=n.iterator||"@@iterator",r=n.toS
 <body>
 <div id="root">
   <div style="padding:40px;text-align:center;font-family:Arial,sans-serif;color:#666;">
-    Loading Kituu CBC Results System…
+    Loading CBC Results System…
   </div>
 </div>
 
@@ -574,7 +574,7 @@ function LoginScreen({ onLogin }) {
         if (GH) {
           await loadDB(true);
           const sc = await loadShared("sision_school_config", null);
-          if (sc && sc.name) setSchoolName(sc.name);
+          if (sc && sc.name) { setSchoolName(sc.name); document.title = sc.name + " — Results"; }
         }
       } catch {}
     })();
@@ -750,6 +750,7 @@ function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, onSave, o
       const ok = await saveShared("sision_school_config", { name, county, motto });
       if (ok) {
         onSave({ name, county, motto });
+        document.title = name + " — Results";
         setSaved(true);
         setTimeout(()=>setSaved(false), 2000);
       } else {
@@ -1874,7 +1875,7 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
           )}
         </tbody>
       </table>
-      <div style={CL.footer}>Kituu Junior School · {term} {year} · {label} · {new Date().toLocaleDateString()}</div>
+      <div style={CL.footer}>{schoolName||"Kituu Junior School"} · {term} {year} · {label} · {new Date().toLocaleDateString()}</div>
     </div>
   );
 }
@@ -2243,6 +2244,7 @@ function App() {
         setSchoolName(sc.name || "Kituu Junior School");
         setSchoolCounty(sc.county || "Samburu");
         setSchoolMotto(sc.motto || "");
+        if (sc.name) document.title = sc.name + " — Results";
       }
     })();
   },[]);

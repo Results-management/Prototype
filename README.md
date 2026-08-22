@@ -139,3 +139,30 @@ stream splitting anywhere.
   Manage Classes. Merging two classes into one during promotion still isn't
   built; if you need it, promote as-is then use Manage Classes/Edit Learner
   afterward to consolidate.
+
+## Is this file specific to Kituu?
+
+Mostly no, but not entirely — here's the honest breakdown:
+
+**Fully generic, controlled by School Settings:**
+- School name, county, motto — shown on login, report cards, class lists, and
+  the browser tab title, all update live once saved
+- Every login, class, and grading band — all editable, nothing Kituu-specific baked in
+
+**Still hardcoded (can't be changed without editing the file):**
+- `apple-mobile-web-app-title` in the HTML `<head>` — the name used when
+  someone "Adds to Home Screen." This is read once at install time by the
+  phone's OS, so it can't be changed by the app itself at runtime.
+- `manifest.json`'s `name`/`short_name` — same limitation, it's a separate
+  static file read by the browser before your app's JS even runs.
+- The default admin password (`adminkituu2026`) has "kituu" baked into the
+  string itself — works fine for any school, but worth changing anyway.
+
+**Practical constraint, not a code limitation:**
+- One GitHub repo = one school's data. Reusing this for a second school means
+  a separate repo, separate GitHub Pages deployment, and its own School
+  Settings — not just changing a name field.
+
+If you want a second school fully set up (its own repo-ready files, its own
+default logins), tell me and I'll generate a clean copy rather than you
+hand-editing this one.
