@@ -1972,14 +1972,17 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
 }
 
 // ─── LEARNER TREND CHART ─────────────────────────────────────────────────────
-// Compact, full-width line chart of a learner's exam mean (%) across every exam on record.
-// The viewBox is a fixed width so the chart always runs edge-to-edge of the report form
-// and its printed height stays small and constant, however many exams there are.
+// Compact, full-width line chart of a learner's TOTAL POINTS across every exam on record
+// (max possible = number of subjects x 8). The viewBox is a fixed width so the chart always
+// runs edge-to-edge of the report form and its printed height stays small and constant,
+// however many exams there are.
 function TrendChart({ data }) {
   const pts = data || [];
-  const real = pts.filter(d => typeof d.avg === "number" && !isNaN(d.avg));
+  const isNum = v => typeof v === "number" && !isNaN(v);
+  const real = pts.filter(d => isNum(d.points));
   if (real.length < 2) return null;
   const n = pts.length;
+  const maxPts = SUBJECTS.length * 8;
   const W = 640, padL = 26, padR = 16, padT = 13;
   const innerW = W - padL - padR;
   const spacing = n > 1 ? innerW / (n - 1) : innerW;
@@ -1987,14 +1990,17 @@ function TrendChart({ data }) {
   const padB = rotate ? 36 : 17;
   const innerH = 50;
   const H = padT + innerH + padB;
-  const vals = real.map(d => d.avg);
-  let lo = Math.max(0, Math.floor((Math.min(...vals) - 10) / 10) * 10);
-  let hi = Math.min(100, Math.ceil((Math.max(...vals) + 10) / 10) * 10);
-  if (hi - lo < 30) { lo = Math.max(0, hi - 30); if (hi - lo < 30) hi = lo + 30; }
+  const vals = real.map(d => d.points);
+  const pad = Math.max(4, Math.round(maxPts * 0.08));
+  const minSpan = Math.max(12, Math.round(maxPts * 0.25));
+  let lo = Math.max(0, Math.floor((Math.min(...vals) - pad) / 4) * 4);
+  let hi = Math.min(maxPts, Math.ceil((Math.max(...vals) + pad) / 4) * 4);
+  if (hi - lo < minSpan) { lo = Math.max(0, hi - minSpan); if (hi - lo < minSpan) hi = Math.min(maxPts, lo + minSpan); }
+  if (hi <= lo) hi = lo + 1;
   const mid = Math.round((lo + hi) / 2);
   const xAt = i => n > 1 ? padL + (innerW * i) / (n - 1) : padL + innerW / 2;
   const yAt = v => padT + innerH - ((Math.max(lo, Math.min(hi, v)) - lo) * innerH) / (hi - lo);
-  const marks = pts.map(d => (typeof d.avg === "number" && !isNaN(d.avg)) ? d.avg : null);
+  const marks = pts.map(d => isNum(d.points) ? d.points : null);
   const segs = []; let cur = [];
   marks.forEach((v, i) => { if (v == null) { if (cur.length) segs.push(cur); cur = []; } else cur.push([i, v]); });
   if (cur.length) segs.push(cur);
@@ -2162,12 +2168,12 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
         );
       })()}
 
-      {examHistory && examHistory.filter(d=>typeof d.avg==="number" && !isNaN(d.avg)).length >= 2 && (
+      {examHistory && examHistory.filter(d=>typeof d.points==="number" && !isNaN(d.points)).length >= 2 && (
         <div style={{marginBottom:6}}>
           <div style={{...RC.sectionTitle,display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
             <span>PERFORMANCE OVER TIME</span>
             <span style={{fontWeight:600,fontSize:7.5,letterSpacing:0,textTransform:"none",color:"#333"}}>
-              <span style={{display:"inline-block",width:7,height:7,background:"#2e7d4f",transform:"rotate(45deg)",marginRight:4}}></span>Exam mean (%)
+              <span style={{display:"inline-block",width:7,height:7,background:"#2e7d4f",transform:"rotate(45deg)",marginRight:4}}></span>Total points (out of {SUBJECTS.length*8})
             </span>
           </div>
           <TrendChart data={examHistory} />
@@ -3009,6 +3015,46 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
   }
 
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  // Builds a detached, fully-laid-out copy of the content for PDF capture. The live source
+  // sits in a 0x0 hidden box far off-screen, and html2pdf's own overlay is only as tall as the
+  // browser window — either can make the capture clip the page. Here every report card is
+  // measured at its real size and, if it is taller than one A4 page, scaled down to fit, so a
+  // report always lands whole on a single page.
+  function stageForPdf(node, isList) {
+    const PX = 96;
+    const pageW = (isList ? 11.69 : 8.27) - 0.6;          // inches inside the 0.3in margins
+    const pageH = (isList ? 8.27 : 11.69) - 0.6;
+    const stage = document.createElement("div");
+    stage.style.cssText = `position:absolute;left:-20000px;top:0;width:${Math.round(pageW*PX)}px;background:#fff;`;
+    const isCard = node.classList && node.classList.contains("report-card");
+    const holder = document.createElement("div");
+    holder.style.cssText = "background:#fff;";
+    holder.innerHTML = isCard ? node.outerHTML : node.innerHTML;
+    stage.appendChild(holder);
+    document.body.appendChild(stage);
+    if (!isList) {
+      const maxH = pageH * PX - 6;
+      const cards = Array.from(holder.querySelectorAll(".report-card"));
+      cards.forEach((card, idx) => {
+        const h = card.offsetHeight;
+        const wrap = document.createElement("div");
+        card.parentNode.insertBefore(wrap, card);
+        wrap.appendChild(card);
+        card.style.margin = "0 auto";
+        if (h > maxH) {
+          const sc = maxH / h;
+          card.style.transform = `scale(${sc.toFixed(4)})`;
+          card.style.transformOrigin = "top center";
+          wrap.style.height = Math.floor(h * sc) + "px";
+        }
+        wrap.style.overflow = "visible";
+        if (idx > 0) wrap.style.pageBreakBefore = "always";
+      });
+    }
+    return { stage, target: holder };
+  }
+
   async function handleDownload(mode, filename) {
     const isList = mode==="blank" || mode==="filled";
     const node = findPrintNode(mode);
@@ -3018,18 +3064,29 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       return;
     }
     setPdfBusy(true);
+    const savedX = window.scrollX, savedY = window.scrollY;
+    let staged = null;
     try {
+      window.scrollTo(0, 0);   // html2canvas offsets/clips the capture if the page is scrolled
+      staged = stageForPdf(node, isList);
       await html2pdf().set({
         margin: 0.3,
         filename: `${filename}.pdf`,
         image: { type: "jpeg", quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        html2canvas: {
+          scale: 2, useCORS: true, backgroundColor: "#ffffff",
+          scrollX: 0, scrollY: 0,
+          windowWidth: Math.max(document.documentElement.clientWidth, 1100),
+          windowHeight: Math.max(staged.target.scrollHeight, window.innerHeight)
+        },
         jsPDF: { unit: "in", format: "a4", orientation: isList ? "landscape" : "portrait" },
         pagebreak: { mode: ["css", "legacy"] }
-      }).from(node).save();
+      }).from(staged.target).save();
     } catch (e) {
       alert("Could not generate the PDF. Please try again — if it keeps failing, use the 🖨 Print button instead and choose 'Save as PDF' from the print dialog.");
     } finally {
+      if (staged && staged.stage.parentNode) staged.stage.parentNode.removeChild(staged.stage);
+      window.scrollTo(savedX, savedY);
       setPdfBusy(false);
     }
   }
