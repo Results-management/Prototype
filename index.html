@@ -3,19 +3,22 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Kituu Results App</title>
+<title>School Results App</title>
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#111111" />
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <link rel="apple-touch-icon" href="icon-192.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black" />
-<meta name="apple-mobile-web-app-title" content="Kituu Results" />
+<meta name="apple-mobile-web-app-title" content="School Results" />
 <meta name="mobile-web-app-capable" content="yes" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
   html,body,#root{margin:0;padding:0;background:#f4f4f4;}
   *{box-sizing:border-box;}
+  .report-card{page-break-inside:avoid;break-inside:avoid;}
+  .report-card + .report-card{page-break-before:always;break-before:page;}
 </style>
 <script>
 /**
@@ -455,6 +458,20 @@ async function saveSubjectScores(key, subject, updatesByName, rosterNames, retri
   }
   return false;
 }
+// A grade that has named classes (East, West…) must not also carry the blank "Main" class.
+// The blank one is dropped only when it has no learners, so no real data is ever hidden.
+async function cleanClassesConfig(cfg) {
+  const base = { ...(cfg || {}) };
+  ["7","8","9"].forEach(g => { if (!base[g] || !base[g].length) base[g] = [""]; });
+  for (const g of Object.keys(base)) {
+    const list = base[g];
+    if (list.includes("") && list.some(x => x !== "")) {
+      const roster = (await loadShared(learnersKey(g, ""), [])) || [];
+      if (!roster.length) base[g] = list.filter(x => x !== "");
+    }
+  }
+  return base;
+}
 async function listSharedKeys(prefix) {
   const db = await loadDB();
   return Object.keys(db).filter(k => k.startsWith(prefix));
@@ -528,7 +545,7 @@ function SetupScreen({ onDone }) {
           3. Scroll down → tap <b>Developer settings</b><br />
           4. Tap <b>Personal access tokens → Tokens (classic)</b><br />
           5. Tap <b>Generate new token (classic)</b><br />
-          6. Give it any name e.g. <b>Kituu Marks</b><br />
+          6. Give it any name e.g. <b>School Marks</b><br />
           7. Set Expiration to <b>No expiration</b><br />
           8. Check the box ✅ next to <b>public_repo</b><br />
           9. Scroll down → tap <b>Generate token</b><br />
@@ -566,7 +583,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(false);
-  const [schoolName, setSchoolName] = useState("Kituu Junior School");
+  const [schoolName, setSchoolName] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -620,7 +637,7 @@ function LoginScreen({ onLogin }) {
     <div style={{ background: "#111", minHeight: "100vh", padding: "16px 12px" }}>
       <div style={bx}>
         <div style={{ textAlign: "center", marginBottom: 18 }}>
-          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: 1 }}>{schoolName.toUpperCase()}</div>
+          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: 1 }}>{(schoolName||"School Results App").toUpperCase()}</div>
           <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>Sign in to continue</div>
         </div>
         <label style={{ fontSize: 12, fontWeight: 700, color: "#444" }}>Username</label>
@@ -729,10 +746,13 @@ function TeacherAdminScreen({ onDone }) {
 }
 
 // ─── SCHOOL SETTINGS (admin-editable name/county/motto) ───────────────────
-function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, onSave, onDone }) {
+function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, schoolPOBox, schoolPhone, schoolEmail, onSave, onDone }) {
   const [name, setName] = useState(schoolName);
   const [county, setCounty] = useState(schoolCounty);
   const [motto, setMotto] = useState(schoolMotto);
+  const [poBox, setPOBox] = useState(schoolPOBox || "");
+  const [phone, setPhone] = useState(schoolPhone || "");
+  const [email, setEmail] = useState(schoolEmail || "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -742,15 +762,17 @@ function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, onSave, o
     fontSize: 14, marginTop: 4, marginBottom: 14, boxSizing: "border-box" };
   const btn = (bg) => ({ marginTop: 4, width: "100%", padding: 12, background: bg, color: "#fff",
     border: "none", borderRadius: 8, fontSize: 15, fontWeight: 700, cursor: "pointer" });
+  const lbl = { fontSize: 11, fontWeight: 700, color: "#444", textTransform: "uppercase", letterSpacing: 0.5 };
 
   async function save() {
     if (!GH) { alert("Not connected to GitHub. Connect first so this is shared with everyone."); return; }
     setSaving(true);
     try {
-      const ok = await saveShared("sision_school_config", { name, county, motto });
+      const data = { name, county, motto, poBox, phone, email };
+      const ok = await saveShared("sision_school_config", data);
       if (ok) {
-        onSave({ name, county, motto });
-        document.title = name + " — Results";
+        onSave(data);
+        document.title = (name||"Results App") + " — Results";
         setSaved(true);
         setTimeout(()=>setSaved(false), 2000);
       } else {
@@ -766,15 +788,37 @@ function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, onSave, o
       <div style={bx}>
         <div style={{ fontSize: 21, fontWeight: 800, marginBottom: 2 }}>🏫 School Settings</div>
         <p style={{ fontSize: 13, color: "#555", margin: "4px 0 18px" }}>
-          Shown on the login screen, report cards, and class lists.
+          Shown on the login screen, report cards, and class lists — leave any field blank to leave it off the header.
         </p>
         {!GH && <div style={{ color: "#c0392b", fontSize: 13, marginBottom: 12 }}>Not connected to GitHub — connect first so changes can be shared with everyone.</div>}
-        <label style={{ fontSize: 11, fontWeight: 700, color: "#444", textTransform: "uppercase", letterSpacing: 0.5 }}>School Name</label>
-        <input style={inp} value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Kituu Junior School" />
-        <label style={{ fontSize: 11, fontWeight: 700, color: "#444", textTransform: "uppercase", letterSpacing: 0.5 }}>County / Location</label>
+
+        <label style={lbl}>School Name</label>
+        <input style={inp} value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Your School Name" />
+
+        <label style={lbl}>P.O. Box (optional)</label>
+        <input style={inp} value={poBox} onChange={e=>setPOBox(e.target.value)} placeholder="e.g. P.O BOX 32 - 80120" />
+
+        <label style={lbl}>County / Location</label>
         <input style={inp} value={county} onChange={e=>setCounty(e.target.value)} placeholder="e.g. Samburu" />
-        <label style={{ fontSize: 11, fontWeight: 700, color: "#444", textTransform: "uppercase", letterSpacing: 0.5 }}>Motto (optional)</label>
-        <input style={inp} value={motto} onChange={e=>setMotto(e.target.value)} placeholder="e.g. Excellence Through Discipline" />
+
+        <label style={lbl}>Motto (optional)</label>
+        <input style={inp} value={motto} onChange={e=>setMotto(e.target.value)} placeholder="e.g. Hard Work Pays" />
+
+        <label style={lbl}>Phone (optional)</label>
+        <input style={inp} value={phone} onChange={e=>setPhone(e.target.value)} placeholder="e.g. 0712 345 678" />
+
+        <label style={lbl}>Email (optional)</label>
+        <input style={inp} value={email} onChange={e=>setEmail(e.target.value)} placeholder="e.g. info@yourschool.ac.ke" />
+
+        <div style={{ background:"#f8f9fb", border:"1px solid #e5e7eb", borderRadius:8, padding:"12px 14px", marginBottom:14 }}>
+          <div style={{ fontSize:10, fontWeight:700, color:"#888", textTransform:"uppercase", marginBottom:6 }}>Header Preview</div>
+          <div style={{ fontWeight:900, fontSize:15 }}>{(name||"YOUR SCHOOL NAME").toUpperCase()}</div>
+          {poBox && <div style={{ fontSize:12 }}>{poBox}</div>}
+          {county && <div style={{ fontSize:12 }}>{county.toUpperCase()}</div>}
+          {motto && <div style={{ fontSize:12, fontStyle:"italic" }}>Motto: {motto}</div>}
+          {(phone || email) && <div style={{ fontSize:11, color:"#555" }}>{[phone, email].filter(Boolean).join(" · ")}</div>}
+        </div>
+
         {saved && <div style={{ color: "#16a34a", fontSize: 12, marginBottom: 8 }}>✅ Saved!</div>}
         <button style={btn("#1a56db")} onClick={save} disabled={saving}>{saving ? "Saving…" : "💾 Save"}</button>
         <button style={{ ...btn("#555"), marginTop: 6 }} onClick={onDone}>← Back</button>
@@ -785,7 +829,12 @@ function SchoolSettingsScreen({ schoolName, schoolCounty, schoolMotto, onSave, o
 
 // ─── MANAGE CLASSES (admin-editable, unlimited named classes per grade) ───
 function ManageClassesScreen({ classesConfig, onSave, onDone }) {
-  const [cfg, setCfg] = useState(JSON.parse(JSON.stringify(classesConfig)));
+  const [cfg, setCfg] = useState(() => {
+    const base = JSON.parse(JSON.stringify(classesConfig || {}));
+    // Backfill any missing grade so Grade 7/8/9 always exist with at least one class.
+    ["7","8","9"].forEach(g => { if (!base[g] || !base[g].length) base[g] = [""]; });
+    return base;
+  });
   const [newNames, setNewNames] = useState({ "7": "", "8": "", "9": "" });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -796,14 +845,19 @@ function ManageClassesScreen({ classesConfig, onSave, onDone }) {
   const btn = (bg) => ({ padding: "10px 14px", background: bg, color: "#fff",
     border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer" });
 
-  function addClass(grade) {
+  async function addClass(grade) {
     const raw = (newNames[grade] || "").trim();
     if (!raw) return;
     const list = cfg[grade] || [];
     if (list.includes(raw)) { alert(`Grade ${grade} already has a class named "${raw}".`); return; }
-    // If the only existing class is the blank/default "Main" one and it's empty of meaning,
-    // just add alongside it — admin can remove "Main" afterward once learners are reassigned.
-    setCfg(c => ({ ...c, [grade]: [...list, raw] }));
+    // If the only existing class is the blank/default "Main" one and it has no learners,
+    // replace it — otherwise a useless empty "Main" class would sit beside East/West.
+    let next = [...list, raw];
+    if (list.length === 1 && list[0] === "") {
+      const roster = (await loadShared(learnersKey(grade, ""), [])) || [];
+      if (!roster.length) next = [raw];
+    }
+    setCfg(c => ({ ...c, [grade]: next }));
     setNewNames(n => ({ ...n, [grade]: "" }));
   }
 
@@ -889,7 +943,13 @@ const GRADES = [
   { sub: "BE2", level: "BE", min: 1,  max: 10,  points: 1, band: "Below Expectations 2",     remark: "Extremely weak" },
 ];
 
-const SUBJECTS = ["MATH","ENG","KISW","SCIENCE","PRETECH","AGRIC","SOCIAL","CRE","C/A"];
+const SUBJECTS = ["MATH","ENG","KISW","SCIENCE","PRETECH","AGRIC","SOCIAL","RE","C/A"];
+const SUBJECT_FULL = {
+  MATH: "Mathematics", ENG: "English", KISW: "Kiswahili", SCIENCE: "Integrated Science",
+  PRETECH: "Pre-Technical Studies", AGRIC: "Agriculture", SOCIAL: "Social Studies",
+  RE: "Religious Education", "C/A": "Creative Arts"
+};
+function subjectKey(sub){ return SUBJECT_FULL[sub] || sub; }
 
 // ── CBC Career Pathways ─────────────────────────────────────────────────
 // Groups subjects into the three JSS pathway families for the report card's
@@ -897,17 +957,15 @@ const SUBJECTS = ["MATH","ENG","KISW","SCIENCE","PRETECH","AGRIC","SOCIAL","CRE"
 const PATHWAYS = [
   { name: "STEM",           subjects: ["MATH","SCIENCE","AGRIC","PRETECH"] },
   { name: "Arts & Sports",  subjects: ["C/A"] },
-  { name: "Social Sciences",subjects: ["ENG","KISW","SOCIAL","CRE"] },
+  { name: "Social Sciences",subjects: ["ENG","KISW","SOCIAL","RE"] },
 ];
 
 function computePathwayScores(scores) {
   return PATHWAYS.map(p => {
     let total = 0, count = 0;
     p.subjects.forEach(sub => {
-      const v = Number(scores && scores[sub]);
-      if (!isNaN(v) && scores[sub] !== "" && scores[sub] !== undefined && scores[sub] !== null) {
-        total += v; count++;
-      }
+      const v = subjectTotal(scores, sub);
+      if (v !== "") { total += v; count++; }
     });
     const outOf = p.subjects.length * 100;
     const percent = p.subjects.length ? Math.round((total / outOf) * 1000) / 10 : 0;
@@ -915,6 +973,25 @@ function computePathwayScores(scores) {
   });
 }
 const TERMS = ["Mid Term 1","End Term 1","Mid Term 2","End Term 2","Mid Term 3","End Term 3"];
+// Grade 9 sits three assessments in Term 3 instead of Mid Term 3 / End Term 3.
+const TERMS_G9 = ["Mid Term 1","End Term 1","Mid Term 2","End Term 2","Term 3 Assessment 1","Term 3 Assessment 2","Term 3 Final Assessment"];
+function termsFor(gr) { return String(gr) === "9" ? TERMS_G9 : TERMS; }
+// If the selected term doesn't exist for this grade (e.g. after switching grade), map it to its Term 3 equivalent.
+function normTerm(t, gr) {
+  const list = termsFor(gr);
+  if (list.includes(t)) return t;
+  const g9 = String(gr) === "9";
+  const map = g9
+    ? { "Mid Term 3": "Term 3 Assessment 1", "End Term 3": "Term 3 Final Assessment",
+        "Assessment 1": "Term 3 Assessment 1", "Assessment 2": "Term 3 Assessment 2", "Final Assessment": "Term 3 Final Assessment" }
+    : { "Term 3 Assessment 1": "Mid Term 3", "Term 3 Assessment 2": "End Term 3", "Term 3 Final Assessment": "End Term 3",
+        "Assessment 1": "Mid Term 3", "Assessment 2": "End Term 3", "Final Assessment": "End Term 3" };
+  return map[t] || list[0];
+}
+function shortTermLabel(t) {
+  return t.replace("Term 3 Final Assessment","T3 FA").replace("Term 3 Assessment 1","T3 A1").replace("Term 3 Assessment 2","T3 A2")
+          .replace("Mid Term","MT").replace("End Term","ET");
+}
 const YEARS = ["2024","2025","2026","2027","2028","2029","2030","2031","2032"];
 
 function getGrade(score) {
@@ -942,9 +1019,9 @@ function encourageRemark(subCode) {
 }
 
 function calcStats(scores) {
-  const vals = SUBJECTS.map(s => Number(scores[s])).filter(v => !isNaN(v) && v > 0);
+  const vals = SUBJECTS.map(s => subjectTotal(scores, s)).filter(v => v !== "" && v > 0);
   const total = vals.reduce((a,b)=>a+b,0);
-  const points = SUBJECTS.map(s=>getGrade(scores[s])?.points||0).reduce((a,b)=>a+b,0);
+  const points = SUBJECTS.map(s=>getGrade(subjectTotal(scores, s))?.points||0).reduce((a,b)=>a+b,0);
   const avg = vals.length ? (total/vals.length).toFixed(2) : "0.00";
   const ptAvg = SUBJECTS.length ? points/SUBJECTS.length : 0;
   let level = "BE";
@@ -952,14 +1029,26 @@ function calcStats(scores) {
   return { total, points, avg, level };
 }
 
+function meanOf(vals) { return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2) : "–"; }
+
 function calcSubjectMeans(rankedList) {
   const means = {};
+  const boys = rankedList.filter(l=>l.gender==="M");
+  const girls = rankedList.filter(l=>l.gender==="F");
   SUBJECTS.forEach(sub => {
-    const vals = rankedList.map(l => Number(l.scores[sub])).filter(v => !isNaN(v) && v > 0);
-    means[sub] = vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2) : "–";
+    const valsOf = list => list.map(l => subjectTotal(l.scores, sub)).filter(v => v !== "" && v > 0);
+    means[sub] = meanOf(valsOf(rankedList));
+    means[sub+"_M"] = meanOf(valsOf(boys));
+    means[sub+"_F"] = meanOf(valsOf(girls));
   });
   const allAvgs = rankedList.filter(l=>l.total>0).map(l=>parseFloat(l.avg));
-  means["_classMean"] = allAvgs.length ? (allAvgs.reduce((a,b)=>a+b,0)/allAvgs.length).toFixed(2) : "–";
+  const boyAvgs = boys.filter(l=>l.total>0).map(l=>parseFloat(l.avg));
+  const girlAvgs = girls.filter(l=>l.total>0).map(l=>parseFloat(l.avg));
+  means["_classMean"] = meanOf(allAvgs);
+  means["_boysMean"] = meanOf(boyAvgs);
+  means["_girlsMean"] = meanOf(girlAvgs);
+  means["_boysCount"] = boys.filter(l=>l.total>0).length;
+  means["_girlsCount"] = girls.filter(l=>l.total>0).length;
   // Mean total marks expressed as a fraction of the maximum possible total
   // (sum of every learner's overall total, divided by number of learners,
   // shown like "370/900").
@@ -970,6 +1059,20 @@ function calcSubjectMeans(rankedList) {
   return means;
 }
 
+// Top scorer ("subject champion") per subject across a ranked list.
+function calcSubjectChampions(rankedList) {
+  const champs = {};
+  SUBJECTS.forEach(sub => {
+    let best = null;
+    rankedList.forEach(l => {
+      const v = subjectTotal(l.scores, sub);
+      if (v !== "" && v > 0 && (!best || v > best.score)) best = { name: l.name, score: v };
+    });
+    champs[sub] = best;
+  });
+  return champs;
+}
+
 // Compute per-subject rank for every learner across a combined list (East+West merged)
 // Returns { learnerName: { subjectName: "3/62", ... }, ... }
 function calcSubjectRanks(combinedList) {
@@ -977,8 +1080,8 @@ function calcSubjectRanks(combinedList) {
   const total = combinedList.length;
   SUBJECTS.forEach(sub => {
     const sorted = [...combinedList]
-      .filter(l => Number(l.scores[sub]) > 0)
-      .sort((a,b) => Number(b.scores[sub]) - Number(a.scores[sub]));
+      .filter(l => { const v = subjectTotal(l.scores, sub); return v !== "" && v > 0; })
+      .sort((a,b) => subjectTotal(b.scores, sub) - subjectTotal(a.scores, sub));
     sorted.forEach((l,i) => {
       if (!result[l.name]) result[l.name] = {};
       result[l.name][sub] = `${i+1}/${total}`;
@@ -1012,9 +1115,9 @@ const SEED_YEAR = "2026";
 //     {grade,stream} objects, or the string "ALL" to mean every class that currently
 //     exists (used by subject teachers, since classes are added/renamed under Manage Classes).
 // - subjects: (subjectTeacher only) which subjects they enter marks for. Must be exactly
-//     from: MATH, ENG, KISW, SCIENCE, PRETECH, AGRIC, SOCIAL, CRE, "C/A"
+//     from: MATH, ENG, KISW, SCIENCE, PRETECH, AGRIC, SOCIAL, RE, "C/A"
 const USERS = {
-  "admin": { password: "adminkituu2026", role: "admin", name: "Administrator" },
+  "admin": { password: "admin2026", role: "admin", name: "Administrator" },
 
   "classteacher7": { password: "2026", role: "classTeacher", name: "Class Teacher (edit me)",
     classes: [{grade:"7",stream:""}] },
@@ -1037,8 +1140,8 @@ const USERS = {
     subjects: ["AGRIC"], classes: "ALL" },
   "socialstudies": { password: "ss2026", role: "subjectTeacher", name: "Subject Teacher (edit me)",
     subjects: ["SOCIAL"], classes: "ALL" },
-  "cre": { password: "cre2026", role: "subjectTeacher", name: "Subject Teacher (edit me)",
-    subjects: ["CRE"], classes: "ALL" },
+  "re": { password: "re2026", role: "subjectTeacher", name: "Subject Teacher (edit me)",
+    subjects: ["RE"], classes: "ALL" },
   "creativearts": { password: "cas2026", role: "subjectTeacher", name: "Subject Teacher (edit me)",
     subjects: ["C/A"], classes: "ALL" },
 };
@@ -1082,8 +1185,9 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
   const [newGr7Classes, setNewGr7Classes] = useState([""]);
   const [newClassInput, setNewClassInput] = useState("");
   const [newGr7Teachers, setNewGr7Teachers] = useState({});
-  const [newGr7Learners, setNewGr7Learners] = useState([]); // [{name, cls}]
+  const [newGr7Learners, setNewGr7Learners] = useState([]); // [{name, admNo, cls}]
   const [newLearnerName, setNewLearnerName] = useState("");
+  const [newLearnerAdmNo, setNewLearnerAdmNo] = useState("");
   const [newLearnerClass, setNewLearnerClass] = useState("");
 
   const [applying, setApplying] = useState(false);
@@ -1128,8 +1232,9 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
     if (!n) return;
     if (newGr7Learners.find(l=>l.name===n)) return;
     const cls = newGr7Classes.length > 1 ? (newLearnerClass || newGr7Classes[0]) : newGr7Classes[0];
-    setNewGr7Learners(prev => [...prev, {name:n, cls}]);
+    setNewGr7Learners(prev => [...prev, {name:n, admNo:newLearnerAdmNo.trim(), cls}]);
     setNewLearnerName("");
+    setNewLearnerAdmNo("");
   }
   function removeNewLearner(name) {
     setNewGr7Learners(prev => prev.filter(l=>l.name!==name));
@@ -1153,7 +1258,7 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
       for (const s of grade8Classes) {
         const stored = await loadShared(learnersKey("8", s), null);
         const base = stored || (INITIAL_LEARNERS["8"] && INITIAL_LEARNERS["8"][s]) || [];
-        await saveShared(learnersKey("9", s), base.map(l=>({name:l.name})));
+        await saveShared(learnersKey("9", s), base.map(l=>({name:l.name, admNo:l.admNo||""})));
         await saveShared(`sision_teacher_9_${s||"none"}_${toYear}`, grade9Teachers[s] || "");
       }
 
@@ -1161,13 +1266,13 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
       for (const s of grade7Classes) {
         const stored = await loadShared(learnersKey("7", s), null);
         const base = stored || (INITIAL_LEARNERS["7"] && INITIAL_LEARNERS["7"][s]) || [];
-        await saveShared(learnersKey("8", s), base.map(l=>({name:l.name})));
+        await saveShared(learnersKey("8", s), base.map(l=>({name:l.name, admNo:l.admNo||""})));
         await saveShared(`sision_teacher_8_${s||"none"}_${toYear}`, grade8Teachers[s] || "");
       }
 
       // ── 4. New Grade 7 intake ──────────────────────────────────────────
       for (const s of newGr7Classes) {
-        const list = newGr7Learners.filter(l => l.cls === s).map(l => ({name: l.name}));
+        const list = newGr7Learners.filter(l => l.cls === s).map(l => ({name: l.name, admNo: l.admNo||""}));
         await saveShared(learnersKey("7", s), list);
         await saveShared(`sision_teacher_7_${s||"none"}_${toYear}`, newGr7Teachers[s] || "");
       }
@@ -1341,6 +1446,10 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
             <div style={{border:"1.5px solid #e0e0e0",borderRadius:8,padding:14,marginBottom:14}}>
               <div style={{fontWeight:700,fontSize:12,marginBottom:8,color:"#333"}}>ADD LEARNERS</div>
               <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                <input style={{...inp,flex:1,minWidth:110}} value={newLearnerAdmNo}
+                  onChange={e=>setNewLearnerAdmNo(e.target.value)}
+                  onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); addNewLearner(); }}}
+                  placeholder="Assessment No."/>
                 <input style={{...inp,flex:2,minWidth:180}} value={newLearnerName}
                   onChange={e=>setNewLearnerName(e.target.value.toUpperCase())}
                   onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); addNewLearner(); }}}
@@ -1357,7 +1466,7 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
                 {newGr7Learners.map((l,i)=>(
                   <span key={i} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 8px",
                     borderRadius:16,fontSize:11,fontWeight:700,background:"#f3f4f6",color:"#374151"}}>
-                    {l.name}{newGr7Classes.length>1?<span style={{fontSize:10,opacity:0.8}}> ({l.cls||"Main"})</span>:null}
+                    {l.admNo?`${l.admNo} — `:""}{l.name}{newGr7Classes.length>1?<span style={{fontSize:10,opacity:0.8}}> ({l.cls||"Main"})</span>:null}
                     <button onClick={()=>removeNewLearner(l.name)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#888",padding:0,lineHeight:1}}>×</button>
                   </span>
                 ))}
@@ -1404,189 +1513,16 @@ function YearAdvancementWizard({ fromYear, toYear, classesConfig, onDone, onSkip
     </div>
   );
 }
-const SEED_SCORES = {
-  "7": { "": [
-      {name:"ALEX WAINAINA",scores:{"MATH":11,"ENG":56,"KISW":61,"SCIENCE":29,"PRETECH":38,"AGRIC":24,"SOCIAL":32,"CRE":36,"C/A":60}},
-      {name:"ANDREW KAHORA",scores:{"MATH":28,"ENG":81,"KISW":72,"SCIENCE":56,"PRETECH":66,"AGRIC":51,"SOCIAL":63,"CRE":66,"C/A":92}},
-      {name:"ANTHONY NJOROGE",scores:{"MATH":9,"ENG":19,"KISW":43,"SCIENCE":25,"PRETECH":17,"AGRIC":14,"SOCIAL":10,"CRE":12,"C/A":20}},
-      {name:"BENJAMIN BIU",scores:{"MATH":27,"ENG":85,"KISW":79,"SCIENCE":55,"PRETECH":51,"AGRIC":40,"SOCIAL":57,"CRE":57,"C/A":70}},
-      {name:"BRIAN GITUNDU",scores:{"MATH":14,"ENG":87,"KISW":74,"SCIENCE":37,"PRETECH":53,"AGRIC":34,"SOCIAL":70,"CRE":56,"C/A":71}},
-      {name:"BRIAN NDUNGU",scores:{"MATH":8,"ENG":29,"KISW":37,"SCIENCE":33,"PRETECH":12,"AGRIC":17,"SOCIAL":16,"CRE":20,"C/A":20}},
-      {name:"CASSIENNAH NJERI",scores:{"MATH":20,"ENG":82,"KISW":75,"SCIENCE":43,"PRETECH":47,"AGRIC":39,"SOCIAL":35,"CRE":46,"C/A":71}},
-      {name:"CATHERINE WANJIK",scores:{"MATH":13,"ENG":27,"KISW":27,"SCIENCE":12,"PRETECH":16,"AGRIC":23,"SOCIAL":15,"CRE":33,"C/A":27}},
-      {name:"CECILIA MUGURE",scores:{"MATH":27,"ENG":78,"KISW":78,"SCIENCE":48,"PRETECH":52,"AGRIC":44,"SOCIAL":56,"CRE":57,"C/A":73}},
-      {name:"CHARLES MAINA",scores:{"MATH":28,"ENG":87,"KISW":68,"SCIENCE":54,"PRETECH":65,"AGRIC":46,"SOCIAL":83,"CRE":80,"C/A":81}},
-      {name:"CYNTHIA WANGARI",scores:{"MATH":14,"ENG":83,"KISW":74,"SCIENCE":41,"PRETECH":40,"AGRIC":37,"SOCIAL":44,"CRE":63,"C/A":77}},
-      {name:"ELSIE WAMBUI",scores:{"MATH":13,"ENG":39,"KISW":67,"SCIENCE":30,"PRETECH":34,"AGRIC":21,"SOCIAL":23,"CRE":40,"C/A":45}},
-      {name:"ESTON KAMAU",scores:{"MATH":8,"ENG":48,"KISW":56,"SCIENCE":17,"PRETECH":38,"AGRIC":19,"SOCIAL":18,"CRE":20,"C/A":48}},
-      {name:"EUNICE WAMBUGW",scores:{"MATH":4,"ENG":27,"KISW":29,"SCIENCE":22,"PRETECH":27,"AGRIC":23,"SOCIAL":20,"CRE":18,"C/A":28}},
-      {name:"FAITH WANJIKU",scores:{"MATH":38,"ENG":89,"KISW":73,"SCIENCE":53,"PRETECH":61,"AGRIC":43,"SOCIAL":56,"CRE":62,"C/A":82}},
-      {name:"FLORINA NDUKU",scores:{"MATH":22,"ENG":79,"KISW":75,"SCIENCE":51,"PRETECH":59,"AGRIC":44,"SOCIAL":55,"CRE":63,"C/A":73}},
-      {name:"FRANCIS MWANGI",scores:{"MATH":16,"ENG":34,"KISW":66,"SCIENCE":33,"PRETECH":36,"AGRIC":27,"SOCIAL":29,"CRE":23,"C/A":70}},
-      {name:"GLADYS MWIHAKI",scores:{"MATH":7,"ENG":78,"KISW":72,"SCIENCE":23,"PRETECH":38,"AGRIC":31,"SOCIAL":47,"CRE":42,"C/A":64}},
-      {name:"HADASSAH WAITHERA",scores:{"MATH":16,"ENG":79,"KISW":74,"SCIENCE":52,"PRETECH":49,"AGRIC":38,"SOCIAL":54,"CRE":60,"C/A":71}},
-      {name:"HANNAH NJAMBI",scores:{"MATH":8,"ENG":55,"KISW":61,"SCIENCE":28,"PRETECH":25,"AGRIC":30,"SOCIAL":31,"CRE":47,"C/A":45}},
-      {name:"IAN MUHUNGURA",scores:{"MATH":10,"ENG":72,"KISW":68,"SCIENCE":37,"PRETECH":47,"AGRIC":44,"SOCIAL":52,"CRE":51,"C/A":64}},
-      {name:"JAMES GICHURU",scores:{"MATH":1,"ENG":41,"KISW":53,"SCIENCE":27,"PRETECH":35,"AGRIC":23,"SOCIAL":26,"CRE":18,"C/A":28}},
-      {name:"JAMES KIMUHU",scores:{"MATH":28,"ENG":72,"KISW":72,"SCIENCE":44,"PRETECH":54,"AGRIC":56,"SOCIAL":46,"CRE":66,"C/A":64}},
-      {name:"JAMES MWAURA",scores:{"MATH":9,"ENG":32,"KISW":58,"SCIENCE":19,"PRETECH":24,"AGRIC":16,"SOCIAL":10,"CRE":15,"C/A":29}},
-      {name:"JANE WACHUKA",scores:{"MATH":26,"ENG":85,"KISW":78,"SCIENCE":43,"PRETECH":52,"AGRIC":45,"SOCIAL":60,"CRE":72,"C/A":80}},
-      {name:"JANE WAIRIMU",scores:{"MATH":9,"ENG":37,"KISW":60,"SCIENCE":19,"PRETECH":24,"AGRIC":20,"SOCIAL":29,"CRE":24,"C/A":31}},
-      {name:"JANE WANJIRU",scores:{"MATH":11,"ENG":70,"KISW":51,"SCIENCE":26,"PRETECH":39,"AGRIC":36,"SOCIAL":40,"CRE":57,"C/A":53}},
-      {name:"JOHN GACHUIRI",scores:{"MATH":3,"ENG":23,"KISW":20,"SCIENCE":18,"PRETECH":26,"AGRIC":10,"SOCIAL":11,"CRE":10,"C/A":16}},
-      {name:"JOHN KIMANI",scores:{"MATH":20,"ENG":72,"KISW":71,"SCIENCE":55,"PRETECH":52,"AGRIC":31,"SOCIAL":40,"CRE":40,"C/A":73}},
-      {name:"JOHN MARU",scores:{"MATH":38,"ENG":80,"KISW":75,"SCIENCE":41,"PRETECH":45,"AGRIC":44,"SOCIAL":44,"CRE":60,"C/A":81}},
-      {name:"JOHN NDIRANGU",scores:{"MATH":26,"ENG":82,"KISW":72,"SCIENCE":51,"PRETECH":54,"AGRIC":49,"SOCIAL":72,"CRE":65,"C/A":87}},
-      {name:"JOSEPH MWANGI",scores:{"MATH":26,"ENG":76,"KISW":72,"SCIENCE":38,"PRETECH":49,"AGRIC":36,"SOCIAL":40,"CRE":60,"C/A":71}},
-      {name:"JOSEPH NJENGA",scores:{"MATH":14,"ENG":59,"KISW":72,"SCIENCE":48,"PRETECH":46,"AGRIC":37,"SOCIAL":28,"CRE":35,"C/A":53}},
-      {name:"KENNEDY MAINA",scores:{"MATH":18,"ENG":48,"KISW":58,"SCIENCE":35,"PRETECH":36,"AGRIC":21,"SOCIAL":41,"CRE":42,"C/A":36}},
-      {name:"LUCY WANJIKU",scores:{"MATH":28,"ENG":76,"KISW":62,"SCIENCE":26,"PRETECH":41,"AGRIC":27,"SOCIAL":53,"CRE":33,"C/A":64}},
-      {name:"MARY WAITHERA",scores:{"MATH":22,"ENG":84,"KISW":85,"SCIENCE":41,"PRETECH":63,"AGRIC":51,"SOCIAL":71,"CRE":67,"C/A":80}},
-      {name:"MARYANN WAMBUI",scores:{"MATH":10,"ENG":63,"KISW":71,"SCIENCE":44,"PRETECH":51,"AGRIC":43,"SOCIAL":37,"CRE":41,"C/A":66}},
-      {name:"MERCY NJAMBI",scores:{"MATH":4,"ENG":45,"KISW":71,"SCIENCE":14,"PRETECH":31,"AGRIC":16,"SOCIAL":21,"CRE":26,"C/A":37}},
-      {name:"MERCY NJERI",scores:{"MATH":4,"ENG":28,"KISW":61,"SCIENCE":12,"PRETECH":18,"AGRIC":21,"SOCIAL":23,"CRE":10,"C/A":27}},
-      {name:"PAUL NDUNGU",scores:{"MATH":9,"ENG":63,"KISW":71,"SCIENCE":25,"PRETECH":40,"AGRIC":29,"SOCIAL":33,"CRE":31,"C/A":68}},
-      {name:"PETER KARANJA",scores:{"MATH":9,"ENG":42,"KISW":61,"SCIENCE":19,"PRETECH":29,"AGRIC":13,"SOCIAL":15,"CRE":17,"C/A":35}},
-      {name:"PETER KUNGU",scores:{"MATH":35,"ENG":80,"KISW":73,"SCIENCE":44,"PRETECH":61,"AGRIC":44,"SOCIAL":51,"CRE":53,"C/A":70}},
-      {name:"PETER MBUGUA",scores:{"MATH":15,"ENG":35,"KISW":30,"SCIENCE":18,"PRETECH":20,"AGRIC":11,"SOCIAL":16,"CRE":18,"C/A":24}},
-      {name:"PETER MWANGI KAMAU",scores:{"MATH":12,"ENG":58,"KISW":62,"SCIENCE":32,"PRETECH":47,"AGRIC":31,"SOCIAL":56,"CRE":46,"C/A":57}},
-      {name:"PETER MWANGI KI",scores:{"MATH":17,"ENG":69,"KISW":38,"SCIENCE":50,"PRETECH":46,"AGRIC":39,"SOCIAL":53,"CRE":42,"C/A":70}},
-      {name:"PETER NJAU",scores:{"MATH":7,"ENG":18,"KISW":47,"SCIENCE":20,"PRETECH":8,"AGRIC":10,"SOCIAL":26,"CRE":10,"C/A":17}},
-      {name:"ROSE WANJIRU",scores:{"MATH":6,"ENG":19,"KISW":25,"SCIENCE":30,"PRETECH":21,"AGRIC":16,"SOCIAL":14,"CRE":12,"C/A":30}},
-      {name:"RUTH WAMBUI",scores:{"MATH":12,"ENG":65,"KISW":72,"SCIENCE":38,"PRETECH":39,"AGRIC":39,"SOCIAL":34,"CRE":44,"C/A":45}},
-      {name:"RUTH WANGARI",scores:{"MATH":47,"ENG":91,"KISW":75,"SCIENCE":60,"PRETECH":65,"AGRIC":47,"SOCIAL":58,"CRE":72,"C/A":85}},
-      {name:"RUTH WANJIRU",scores:{"MATH":8,"ENG":60,"KISW":70,"SCIENCE":28,"PRETECH":38,"AGRIC":21,"SOCIAL":42,"CRE":42,"C/A":58}},
-      {name:"SALOME MWENDE",scores:{"MATH":15,"ENG":67,"KISW":66,"SCIENCE":29,"PRETECH":41,"AGRIC":31,"SOCIAL":29,"CRE":43,"C/A":56}},
-      {name:"SANDRA MWIHAKI",scores:{"MATH":2,"ENG":35,"KISW":61,"SCIENCE":13,"PRETECH":14,"AGRIC":14,"SOCIAL":20,"CRE":18,"C/A":34}},
-      {name:"TERESIAH WANGAR",scores:{"MATH":16,"ENG":76,"KISW":70,"SCIENCE":39,"PRETECH":36,"AGRIC":37,"SOCIAL":47,"CRE":47,"C/A":63}},
-      {name:"VIVIAN WAMBUI",scores:{"MATH":17,"ENG":63,"KISW":70,"SCIENCE":29,"PRETECH":29,"AGRIC":19,"SOCIAL":29,"CRE":44,"C/A":57}}
-    ] },
-  "8": {
-    "East": [
-      {name:"ANN WAMBOI",scores:{"MATH":25,"ENG":87,"KISW":62,"SCIENCE":50,"PRETECH":43,"AGRIC":80,"SOCIAL":58,"CRE":57,"C/A":51}},
-      {name:"ANNITA WANJIKU",scores:{"MATH":30,"ENG":70,"KISW":50,"SCIENCE":36,"PRETECH":46,"AGRIC":56,"SOCIAL":43,"CRE":35,"C/A":34}},
-      {name:"BRIAN NJUGUNA",scores:{"MATH":22,"ENG":23,"KISW":39,"SCIENCE":18,"PRETECH":13,"AGRIC":26,"SOCIAL":6,"CRE":7,"C/A":12}},
-      {name:"DAVID MUIRURI",scores:{"MATH":47,"ENG":82,"KISW":69,"SCIENCE":70,"PRETECH":58,"AGRIC":86,"SOCIAL":68,"CRE":45,"C/A":47}},
-      {name:"ELIZABETH NJOKI",scores:{"MATH":17,"ENG":62,"KISW":50,"SCIENCE":40,"PRETECH":43,"AGRIC":43,"SOCIAL":31,"CRE":25,"C/A":32}},
-      {name:"ELIZABETH WAIRIM",scores:{"MATH":30,"ENG":62,"KISW":34,"SCIENCE":29,"PRETECH":45,"AGRIC":37,"SOCIAL":37,"CRE":35,"C/A":22}},
-      {name:"ESTHER MUTHONI",scores:{"MATH":42,"ENG":86,"KISW":76,"SCIENCE":61,"PRETECH":71,"AGRIC":84,"SOCIAL":68,"CRE":64,"C/A":58}},
-      {name:"ESTHER NJERI",scores:{"MATH":24,"ENG":76,"KISW":58,"SCIENCE":32,"PRETECH":49,"AGRIC":43,"SOCIAL":38,"CRE":40,"C/A":40}},
-      {name:"FAITH NYOKABI",scores:{"MATH":36,"ENG":77,"KISW":70,"SCIENCE":26,"PRETECH":51,"AGRIC":53,"SOCIAL":55,"CRE":35,"C/A":48}},
-      {name:"FAITH WAIRIMU",scores:{"MATH":29,"ENG":72,"KISW":72,"SCIENCE":38,"PRETECH":45,"AGRIC":59,"SOCIAL":56,"CRE":41,"C/A":37}},
-      {name:"GLADYS WANGOI",scores:{"MATH":18,"ENG":29,"KISW":38,"SCIENCE":17,"PRETECH":11,"AGRIC":23,"SOCIAL":12,"CRE":10,"C/A":17}},
-      {name:"GWANDARU PETER",scores:{"MATH":13,"ENG":16,"KISW":16,"SCIENCE":26,"PRETECH":9,"AGRIC":11,"SOCIAL":8,"CRE":13,"C/A":10}},
-      {name:"IAN GIKONYO",scores:{"MATH":26,"ENG":63,"KISW":41,"SCIENCE":32,"PRETECH":31,"AGRIC":37,"SOCIAL":29,"CRE":14,"C/A":27}},
-      {name:"IAN WAINAINA",scores:{"MATH":25,"ENG":54,"KISW":20,"SCIENCE":40,"PRETECH":29,"AGRIC":43,"SOCIAL":31,"CRE":20,"C/A":26}},
-      {name:"JOSEPH NGUGI",scores:{"MATH":20,"ENG":48,"KISW":56,"SCIENCE":21,"PRETECH":20,"AGRIC":48,"SOCIAL":23,"CRE":43,"C/A":23}},
-      {name:"JOSEPH WATHIGO",scores:{"MATH":19,"ENG":62,"KISW":47,"SCIENCE":46,"PRETECH":35,"AGRIC":57,"SOCIAL":54,"CRE":30,"C/A":36}},
-      {name:"JOY MURUGI",scores:{"MATH":22,"ENG":81,"KISW":75,"SCIENCE":49,"PRETECH":57,"AGRIC":67,"SOCIAL":57,"CRE":55,"C/A":64}},
-      {name:"JOY NYAMBURA",scores:{"MATH":30,"ENG":80,"KISW":67,"SCIENCE":56,"PRETECH":65,"AGRIC":63,"SOCIAL":49,"CRE":50,"C/A":53}},
-      {name:"JOYLINE GATHIRA",scores:{"MATH":22,"ENG":82,"KISW":69,"SCIENCE":45,"PRETECH":51,"AGRIC":73,"SOCIAL":49,"CRE":50,"C/A":63}},
-      {name:"LINET WAIRIMU",scores:{"MATH":38,"ENG":84,"KISW":72,"SCIENCE":55,"PRETECH":62,"AGRIC":79,"SOCIAL":50,"CRE":51,"C/A":55}},
-      {name:"MARY WANJIKU",scores:{"MATH":31,"ENG":82,"KISW":44,"SCIENCE":50,"PRETECH":40,"AGRIC":57,"SOCIAL":39,"CRE":50,"C/A":46}},
-      {name:"MARYAGNESS W",scores:{"MATH":28,"ENG":76,"KISW":76,"SCIENCE":56,"PRETECH":56,"AGRIC":79,"SOCIAL":62,"CRE":50,"C/A":61}},
-      {name:"NAOMI NJERI",scores:{"MATH":52,"ENG":89,"KISW":79,"SCIENCE":73,"PRETECH":82,"AGRIC":84,"SOCIAL":74,"CRE":82,"C/A":66}},
-      {name:"ROSEMARY WAIRIM",scores:{"MATH":20,"ENG":38,"KISW":31,"SCIENCE":17,"PRETECH":17,"AGRIC":24,"SOCIAL":19,"CRE":16,"C/A":17}},
-      {name:"RUTH WANJIRU",scores:{"MATH":61,"ENG":77,"KISW":66,"SCIENCE":43,"PRETECH":57,"AGRIC":71,"SOCIAL":57,"CRE":40,"C/A":45}},
-      {name:"SAMUEL KAMAU",scores:{"MATH":13,"ENG":19,"KISW":21,"SCIENCE":12,"PRETECH":5,"AGRIC":11,"SOCIAL":8,"CRE":11,"C/A":14}},
-      {name:"SAMUEL MBURU",scores:{"MATH":22,"ENG":36,"KISW":27,"SCIENCE":16,"PRETECH":18,"AGRIC":27,"SOCIAL":13,"CRE":14,"C/A":23}},
-      {name:"STEPHEN NJUGUNA",scores:{"MATH":20,"ENG":33,"KISW":19,"SCIENCE":17,"PRETECH":10,"AGRIC":21,"SOCIAL":17,"CRE":7,"C/A":12}},
-      {name:"STEPHEN WAINAINA",scores:{"MATH":15,"ENG":23,"KISW":15,"SCIENCE":7,"PRETECH":8,"AGRIC":13,"SOCIAL":9,"CRE":5,"C/A":12}},
-      {name:"SUSAN NJAMBI",scores:{"MATH":29,"ENG":61,"KISW":48,"SCIENCE":28,"PRETECH":43,"AGRIC":47,"SOCIAL":35,"CRE":25,"C/A":34}},
-      {name:"VICTOR KIMANI",scores:{"MATH":20,"ENG":66,"KISW":57,"SCIENCE":42,"PRETECH":32,"AGRIC":56,"SOCIAL":55,"CRE":30,"C/A":40}},
-      {name:"TAQRIS NJENGA",scores:{"MATH":33,"ENG":58,"KISW":46,"SCIENCE":51,"PRETECH":44,"AGRIC":44,"SOCIAL":37,"CRE":26,"C/A":30}}
-    ],
-    "West": [
-      {name:"ALICE WANJIRU",scores:{"MATH":20,"ENG":41,"KISW":20,"SCIENCE":14,"PRETECH":12,"AGRIC":27,"SOCIAL":17,"CRE":10,"C/A":21}},
-      {name:"ANGELA MUGOTHO",scores:{"MATH":34,"ENG":78,"KISW":71,"SCIENCE":64,"PRETECH":53,"AGRIC":70,"SOCIAL":63,"CRE":74,"C/A":60}},
-      {name:"BLESSING MUTHONI",scores:{"MATH":25,"ENG":72,"KISW":55,"SCIENCE":44,"PRETECH":61,"AGRIC":60,"SOCIAL":40,"CRE":45,"C/A":40}},
-      {name:"BONIFACE KARANJA",scores:{"MATH":14,"ENG":18,"KISW":30,"SCIENCE":23,"PRETECH":6,"AGRIC":10,"SOCIAL":8,"CRE":9,"C/A":10}},
-      {name:"CECILIA MUGURE",scores:{"MATH":18,"ENG":62,"KISW":49,"SCIENCE":29,"PRETECH":21,"AGRIC":29,"SOCIAL":27,"CRE":35,"C/A":30}},
-      {name:"DAVID KIRAGU",scores:{"MATH":23,"ENG":24,"KISW":22,"SCIENCE":15,"PRETECH":23,"AGRIC":10,"SOCIAL":15,"CRE":4,"C/A":6}},
-      {name:"DENNIS MWAURA",scores:{"MATH":19,"ENG":15,"KISW":15,"SCIENCE":10,"PRETECH":13,"AGRIC":10,"SOCIAL":8,"CRE":6,"C/A":8}},
-      {name:"DORCAS WANJA",scores:{"MATH":26,"ENG":71,"KISW":47,"SCIENCE":38,"PRETECH":45,"AGRIC":39,"SOCIAL":39,"CRE":41,"C/A":34}},
-      {name:"ECCRAH WANGARI",scores:{"MATH":17,"ENG":55,"KISW":29,"SCIENCE":25,"PRETECH":38,"AGRIC":30,"SOCIAL":19,"CRE":30,"C/A":11}},
-      {name:"GLADYS MBATIA",scores:{"MATH":23,"ENG":45,"KISW":36,"SCIENCE":35,"PRETECH":6,"AGRIC":36,"SOCIAL":24,"CRE":24,"C/A":17}},
-      {name:"IMMACULATE W",scores:{"MATH":19,"ENG":62,"KISW":37,"SCIENCE":35,"PRETECH":51,"AGRIC":27,"SOCIAL":29,"CRE":53,"C/A":30}},
-      {name:"JAMES KIMANI",scores:{"MATH":16,"ENG":50,"KISW":31,"SCIENCE":21,"PRETECH":34,"AGRIC":20,"SOCIAL":12,"CRE":17,"C/A":16}},
-      {name:"JAMES MURIGU",scores:{"MATH":19,"ENG":58,"KISW":40,"SCIENCE":35,"PRETECH":38,"AGRIC":40,"SOCIAL":42,"CRE":26,"C/A":33}},
-      {name:"JANE WANJIRU K",scores:{"MATH":14,"ENG":43,"KISW":30,"SCIENCE":21,"PRETECH":12,"AGRIC":17,"SOCIAL":16,"CRE":17,"C/A":17}},
-      {name:"JANE WANJIRU W",scores:{"MATH":21,"ENG":31,"KISW":17,"SCIENCE":17,"PRETECH":19,"AGRIC":14,"SOCIAL":9,"CRE":10,"C/A":12}},
-      {name:"JANEBLESS WAMBUI",scores:{"MATH":34,"ENG":88,"KISW":70,"SCIENCE":73,"PRETECH":54,"AGRIC":83,"SOCIAL":70,"CRE":64,"C/A":43}},
-      {name:"JOAN NJERI W",scores:{"MATH":34,"ENG":92,"KISW":64,"SCIENCE":49,"PRETECH":60,"AGRIC":60,"SOCIAL":67,"CRE":70,"C/A":41}},
-      {name:"JOAN WANGARI",scores:{"MATH":26,"ENG":81,"KISW":57,"SCIENCE":44,"PRETECH":59,"AGRIC":36,"SOCIAL":47,"CRE":45,"C/A":50}},
-      {name:"JOSEPH WAINAINA",scores:{"MATH":20,"ENG":53,"KISW":42,"SCIENCE":34,"PRETECH":43,"AGRIC":44,"SOCIAL":34,"CRE":26,"C/A":31}},
-      {name:"KELVIN NJENGA",scores:{"MATH":14,"ENG":10,"KISW":10,"SCIENCE":15,"PRETECH":17,"AGRIC":16,"SOCIAL":7,"CRE":6,"C/A":10}},
-      {name:"LAUGHTER KAHIGA",scores:{"MATH":25,"ENG":80,"KISW":55,"SCIENCE":56,"PRETECH":62,"AGRIC":61,"SOCIAL":63,"CRE":60,"C/A":59}},
-      {name:"LUCY NJERI",scores:{"MATH":48,"ENG":86,"KISW":82,"SCIENCE":77,"PRETECH":78,"AGRIC":81,"SOCIAL":71,"CRE":84,"C/A":73}},
-      {name:"LUCY WAIRIMU",scores:{"MATH":19,"ENG":75,"KISW":51,"SCIENCE":34,"PRETECH":41,"AGRIC":61,"SOCIAL":50,"CRE":45,"C/A":36}},
-      {name:"MARY WAIRIMU",scores:{"MATH":22,"ENG":48,"KISW":29,"SCIENCE":18,"PRETECH":18,"AGRIC":23,"SOCIAL":17,"CRE":10,"C/A":29}},
-      {name:"MILLICENT WANJIR",scores:{"MATH":20,"ENG":70,"KISW":60,"SCIENCE":48,"PRETECH":30,"AGRIC":70,"SOCIAL":39,"CRE":46,"C/A":45}},
-      {name:"MIRIAM WAMBOI",scores:{"MATH":35,"ENG":87,"KISW":60,"SCIENCE":57,"PRETECH":79,"AGRIC":60,"SOCIAL":50,"CRE":70,"C/A":56}},
-      {name:"MONICA MUTHONI",scores:{"MATH":23,"ENG":75,"KISW":54,"SCIENCE":43,"PRETECH":45,"AGRIC":39,"SOCIAL":47,"CRE":42,"C/A":38}},
-      {name:"ROSE NJERI",scores:{"MATH":21,"ENG":72,"KISW":64,"SCIENCE":40,"PRETECH":57,"AGRIC":64,"SOCIAL":48,"CRE":50,"C/A":51}},
-      {name:"STANLEY NDUNGU",scores:{"MATH":41,"ENG":82,"KISW":60,"SCIENCE":53,"PRETECH":46,"AGRIC":61,"SOCIAL":44,"CRE":39,"C/A":47}},
-      {name:"SUSAN WAIRIMU",scores:{"MATH":15,"ENG":51,"KISW":45,"SCIENCE":26,"PRETECH":37,"AGRIC":40,"SOCIAL":34,"CRE":30,"C/A":26}}
-    ]
-  },
-  "9": { "": [
-      {name:"ABIGAEL NYAMBURA",scores:{"MATH":8,"ENG":72,"KISW":50,"SCIENCE":36,"PRETECH":49,"AGRIC":63,"SOCIAL":40,"CRE":56,"C/A":57}},
-      {name:"ALEX NJENGA",scores:{"MATH":5,"ENG":28,"KISW":42,"SCIENCE":14,"PRETECH":26,"AGRIC":29,"SOCIAL":12,"CRE":14,"C/A":30}},
-      {name:"ALICE NDUTA",scores:{"MATH":11,"ENG":40,"KISW":38,"SCIENCE":25,"PRETECH":29,"AGRIC":34,"SOCIAL":13,"CRE":11,"C/A":44}},
-      {name:"ANDY MUTEMI",scores:{"MATH":5,"ENG":60,"KISW":62,"SCIENCE":43,"PRETECH":59,"AGRIC":79,"SOCIAL":39,"CRE":45,"C/A":61}},
-      {name:"ANN MUKAMI",scores:{"MATH":18,"ENG":72,"KISW":72,"SCIENCE":51,"PRETECH":65,"AGRIC":66,"SOCIAL":65,"CRE":75,"C/A":57}},
-      {name:"ANN WANJIKU",scores:{"MATH":17,"ENG":61,"KISW":51,"SCIENCE":27,"PRETECH":35,"AGRIC":47,"SOCIAL":34,"CRE":41,"C/A":44}},
-      {name:"ANTHONY WAITHAK",scores:{"MATH":10,"ENG":32,"KISW":31,"SCIENCE":13,"PRETECH":28,"AGRIC":24,"SOCIAL":11,"CRE":17,"C/A":30}},
-      {name:"BETH WAITHERA",scores:{"MATH":7,"ENG":47,"KISW":44,"SCIENCE":21,"PRETECH":38,"AGRIC":49,"SOCIAL":31,"CRE":32,"C/A":36}},
-      {name:"BRIAN NJOROGE",scores:{"MATH":14,"ENG":51,"KISW":44,"SCIENCE":25,"PRETECH":42,"AGRIC":35,"SOCIAL":16,"CRE":35,"C/A":39}},
-      {name:"CECILIA KABUCHO",scores:{"MATH":16,"ENG":76,"KISW":54,"SCIENCE":40,"PRETECH":62,"AGRIC":61,"SOCIAL":45,"CRE":60,"C/A":56}},
-      {name:"CECILIA WANJIKU",scores:{"MATH":29,"ENG":72,"KISW":63,"SCIENCE":70,"PRETECH":78,"AGRIC":76,"SOCIAL":61,"CRE":64,"C/A":74}},
-      {name:"DANIEL KANGETHE",scores:{"MATH":10,"ENG":48,"KISW":42,"SCIENCE":30,"PRETECH":55,"AGRIC":60,"SOCIAL":40,"CRE":23,"C/A":35}},
-      {name:"DANSON MURAGE",scores:{"MATH":13,"ENG":71,"KISW":65,"SCIENCE":61,"PRETECH":58,"AGRIC":73,"SOCIAL":59,"CRE":60,"C/A":55}},
-      {name:"DAVID KIMANI",scores:{"MATH":9,"ENG":25,"KISW":27,"SCIENCE":10,"PRETECH":21,"AGRIC":9,"SOCIAL":10,"CRE":15,"C/A":15}},
-      {name:"DESMOND ERAPA",scores:{"MATH":28,"ENG":71,"KISW":74,"SCIENCE":53,"PRETECH":82,"AGRIC":77,"SOCIAL":60,"CRE":60,"C/A":63}},
-      {name:"ELIZABETH NJOKI",scores:{"MATH":17,"ENG":68,"KISW":68,"SCIENCE":51,"PRETECH":64,"AGRIC":74,"SOCIAL":56,"CRE":63,"C/A":65}},
-      {name:"ERNEST MUNIU",scores:{"MATH":24,"ENG":65,"KISW":38,"SCIENCE":54,"PRETECH":49,"AGRIC":73,"SOCIAL":24,"CRE":30,"C/A":51}},
-      {name:"ESTHER WANJIRU",scores:{"MATH":51,"ENG":82,"KISW":75,"SCIENCE":71,"PRETECH":89,"AGRIC":86,"SOCIAL":71,"CRE":85,"C/A":75}},
-      {name:"EVALYNE SINTOIYA",scores:{"MATH":11,"ENG":48,"KISW":40,"SCIENCE":19,"PRETECH":43,"AGRIC":49,"SOCIAL":22,"CRE":32,"C/A":47}},
-      {name:"FLORENCE WAIRIMU",scores:{"MATH":10,"ENG":56,"KISW":54,"SCIENCE":31,"PRETECH":46,"AGRIC":66,"SOCIAL":49,"CRE":45,"C/A":51}},
-      {name:"GRACE WAIRIMU",scores:{"MATH":13,"ENG":55,"KISW":57,"SCIENCE":19,"PRETECH":47,"AGRIC":37,"SOCIAL":28,"CRE":45,"C/A":60}},
-      {name:"GRACE WANJIRU",scores:{"MATH":10,"ENG":70,"KISW":59,"SCIENCE":40,"PRETECH":49,"AGRIC":74,"SOCIAL":55,"CRE":60,"C/A":65}},
-      {name:"JAMES MWANGI",scores:{"MATH":11,"ENG":18,"KISW":25,"SCIENCE":13,"PRETECH":19,"AGRIC":27,"SOCIAL":3,"CRE":9,"C/A":14}},
-      {name:"JANE WANJIKU",scores:{"MATH":8,"ENG":28,"KISW":37,"SCIENCE":10,"PRETECH":12,"AGRIC":27,"SOCIAL":3,"CRE":12,"C/A":13}},
-      {name:"JOSEPH GATHIRI",scores:{"MATH":25,"ENG":63,"KISW":53,"SCIENCE":40,"PRETECH":67,"AGRIC":73,"SOCIAL":34,"CRE":47,"C/A":60}},
-      {name:"JOSEPH MWANGI",scores:{"MATH":10,"ENG":68,"KISW":50,"SCIENCE":32,"PRETECH":43,"AGRIC":53,"SOCIAL":27,"CRE":28,"C/A":41}},
-      {name:"JOSEPH NDUNGU",scores:{"MATH":9,"ENG":40,"KISW":30,"SCIENCE":19,"PRETECH":31,"AGRIC":39,"SOCIAL":18,"CRE":27,"C/A":35}},
-      {name:"KENNEDY MAINA",scores:{"MATH":9,"ENG":28,"KISW":16,"SCIENCE":13,"PRETECH":8,"AGRIC":39,"SOCIAL":4,"CRE":10,"C/A":11}},
-      {name:"KEVIN MUINAMIA",scores:{"MATH":1,"ENG":1,"KISW":2,"SCIENCE":4,"PRETECH":8,"AGRIC":4,"SOCIAL":1,"CRE":1,"C/A":2}},
-      {name:"LUCY WANJERI",scores:{"MATH":26,"ENG":73,"KISW":77,"SCIENCE":49,"PRETECH":80,"AGRIC":87,"SOCIAL":53,"CRE":61,"C/A":70}},
-      {name:"MARY WAITHERA",scores:{"MATH":9,"ENG":30,"KISW":27,"SCIENCE":6,"PRETECH":12,"AGRIC":17,"SOCIAL":11,"CRE":14,"C/A":14}},
-      {name:"MARY WARUIRU",scores:{"MATH":11,"ENG":61,"KISW":52,"SCIENCE":28,"PRETECH":55,"AGRIC":63,"SOCIAL":47,"CRE":40,"C/A":52}},
-      {name:"NAOMI WANJIRU",scores:{"MATH":16,"ENG":67,"KISW":65,"SCIENCE":45,"PRETECH":60,"AGRIC":71,"SOCIAL":57,"CRE":54,"C/A":67}},
-      {name:"PAUL KANYURU",scores:{"MATH":4,"ENG":16,"KISW":32,"SCIENCE":6,"PRETECH":36,"AGRIC":19,"SOCIAL":12,"CRE":7,"C/A":18}},
-      {name:"PAUL THUO",scores:{"MATH":23,"ENG":65,"KISW":59,"SCIENCE":36,"PRETECH":58,"AGRIC":67,"SOCIAL":47,"CRE":60,"C/A":66}},
-      {name:"PAULINE WANGARI",scores:{"MATH":25,"ENG":77,"KISW":64,"SCIENCE":59,"PRETECH":76,"AGRIC":81,"SOCIAL":65,"CRE":78,"C/A":78}},
-      {name:"PETER KINYANJUI",scores:{"MATH":17,"ENG":61,"KISW":55,"SCIENCE":22,"PRETECH":41,"AGRIC":53,"SOCIAL":37,"CRE":30,"C/A":43}},
-      {name:"PETER MUCHOKI",scores:{"MATH":7,"ENG":40,"KISW":38,"SCIENCE":14,"PRETECH":20,"AGRIC":44,"SOCIAL":9,"CRE":20,"C/A":37}},
-      {name:"PETER MUNYAKA",scores:{"MATH":54,"ENG":86,"KISW":81,"SCIENCE":86,"PRETECH":90,"AGRIC":90,"SOCIAL":86,"CRE":81,"C/A":82}},
-      {name:"RACHAEL WAMBUI",scores:{"MATH":47,"ENG":88,"KISW":79,"SCIENCE":81,"PRETECH":90,"AGRIC":87,"SOCIAL":88,"CRE":81,"C/A":77}},
-      {name:"ROSE NJERI",scores:{"MATH":12,"ENG":45,"KISW":40,"SCIENCE":21,"PRETECH":38,"AGRIC":47,"SOCIAL":20,"CRE":40,"C/A":41}},
-      {name:"RUTH WACUKA W",scores:{"MATH":35,"ENG":88,"KISW":84,"SCIENCE":70,"PRETECH":87,"AGRIC":81,"SOCIAL":62,"CRE":81,"C/A":82}},
-      {name:"RUTH WAGIKUYU",scores:{"MATH":13,"ENG":33,"KISW":31,"SCIENCE":1,"PRETECH":1,"AGRIC":23,"SOCIAL":1,"CRE":1,"C/A":1}},
-      {name:"RYAN GITAU",scores:{"MATH":37,"ENG":85,"KISW":78,"SCIENCE":75,"PRETECH":86,"AGRIC":87,"SOCIAL":87,"CRE":80,"C/A":88}},
-      {name:"SAMUEL KABURI",scores:{"MATH":24,"ENG":70,"KISW":58,"SCIENCE":58,"PRETECH":72,"AGRIC":73,"SOCIAL":64,"CRE":40,"C/A":58}},
-      {name:"SAMUEL KAMAU",scores:{"MATH":4,"ENG":21,"KISW":21,"SCIENCE":18,"PRETECH":15,"AGRIC":11,"SOCIAL":6,"CRE":14,"C/A":17}},
-      {name:"SAMWEL KIARIE",scores:{"MATH":9,"ENG":82,"KISW":64,"SCIENCE":58,"PRETECH":64,"AGRIC":70,"SOCIAL":56,"CRE":70,"C/A":66}},
-      {name:"STACY NJAMBI",scores:{"MATH":42,"ENG":83,"KISW":76,"SCIENCE":57,"PRETECH":71,"AGRIC":86,"SOCIAL":64,"CRE":65,"C/A":70}},
-      {name:"STEPHEN KAMAU",scores:{"MATH":5,"ENG":32,"KISW":20,"SCIENCE":13,"PRETECH":30,"AGRIC":30,"SOCIAL":18,"CRE":21,"C/A":34}},
-      {name:"TERESIAH MUTHONI",scores:{"MATH":11,"ENG":33,"KISW":27,"SCIENCE":14,"PRETECH":19,"AGRIC":13,"SOCIAL":13,"CRE":21,"C/A":24}},
-      {name:"VICTOR KAHIHIA",scores:{"MATH":24,"ENG":70,"KISW":50,"SCIENCE":53,"PRETECH":65,"AGRIC":73,"SOCIAL":54,"CRE":60,"C/A":61}},
-      {name:"WILSON KIMANI",scores:{"MATH":10,"ENG":53,"KISW":45,"SCIENCE":24,"PRETECH":42,"AGRIC":47,"SOCIAL":21,"CRE":26,"C/A":47}}
-    ] }
-};
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
+// Every subject's mark is a single score out of 100 (Mid Term / End Term).
+// subjectTotal() is the one place that normalizes it for grading/ranking/printing.
 function blankScores() { const s={}; SUBJECTS.forEach(sub=>s[sub]=""); return s; }
+function subjectTotal(scores, sub) {
+  const v = scores && scores[sub];
+  if (v==="" || v===null || v===undefined || isNaN(Number(v))) return "";
+  return Number(v);
+}
 
 // Rank a list and attach .rank, .streamRank (Grade 8), .overallRank (Grade 8)
 function rankLearners(data, streamTag) {
@@ -1636,10 +1572,11 @@ function learnersKey(grade, stream) { return `sision_learners_${grade}_${stream|
 function commentKey(grade, scope, term, year) {
   return `sision_comment_${grade}_${scope||"none"}_${term.replace(/\s+/g,"_")}_${year}`;
 }
-function getPrevTermYear(term, year) {
-  const idx = TERMS.indexOf(term);
-  if (idx > 0) return { prevTerm: TERMS[idx-1], prevYear: year };
-  return { prevTerm: TERMS[TERMS.length-1], prevYear: String(Number(year)-1) };
+function getPrevTermYear(term, year, gr) {
+  const TL = termsFor(gr);
+  const idx = TL.indexOf(term);
+  if (idx > 0) return { prevTerm: TL[idx-1], prevYear: year };
+  return { prevTerm: TL[TL.length-1], prevYear: String(Number(year)-1) };
 }
 // CSV export helper
 function downloadCSV(rows, filename) {
@@ -1673,11 +1610,13 @@ function parseCSVText(text) {
 }
 
 // ─── RESULTS ANALYSIS ──────────────────────────────────────────────────────
-function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, onClose }) {
+function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, schoolName, schoolCounty, onClose }) {
   const total = ranked.length;
   const marked = ranked.filter(r => r.total > 0);
   const passCount = marked.filter(r => r.level==="EE" || r.level==="ME").length;
   const passRate = marked.length ? Math.round((passCount/marked.length)*100) : 0;
+  const contentRef = useRef(null);
+  const [busy, setBusy] = useState(false);
 
   // Per-subject grade distribution
   const subjectDist = {};
@@ -1685,7 +1624,7 @@ function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, o
     const counts = {EE:0, ME:0, AE:0, BE:0};
     let n = 0;
     ranked.forEach(r => {
-      const g = getGrade(r.scores[s]);
+      const g = getGrade(subjectTotal(r.scores, s));
       if (g) { counts[g.level]++; n++; }
     });
     subjectDist[s] = { counts, n };
@@ -1696,10 +1635,18 @@ function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, o
     .sort((a,b)=>b.total-a.total)
     .slice(0,5);
 
+  const champions = calcSubjectChampions(ranked);
+  const boysMarked = marked.filter(l=>l.gender==="M");
+  const girlsMarked = marked.filter(l=>l.gender==="F");
+  const boysPass = boysMarked.filter(l=>l.level==="EE"||l.level==="ME").length;
+  const girlsPass = girlsMarked.filter(l=>l.level==="EE"||l.level==="ME").length;
+  const boysPassRate = boysMarked.length ? Math.round((boysPass/boysMarked.length)*100) : 0;
+  const girlsPassRate = girlsMarked.length ? Math.round((girlsPass/girlsMarked.length)*100) : 0;
+
   const box = { position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:1000,
     display:"flex", alignItems:"center", justifyContent:"center", padding:12 };
-  const panel = { background:"#fff", borderRadius:14, padding:24, maxWidth:720, width:"100%",
-    maxHeight:"92vh", overflowY:"auto", boxShadow:"0 8px 40px rgba(0,0,0,0.3)" };
+  const panel = { background:"#fff", borderRadius:14, maxWidth:720, width:"100%",
+    maxHeight:"92vh", display:"flex", flexDirection:"column", boxShadow:"0 8px 40px rgba(0,0,0,0.3)" };
   const h2 = { fontWeight:900, fontSize:18, borderBottom:"3px solid #000", paddingBottom:8, marginBottom:14 };
   const sectionH = { fontWeight:800, fontSize:13, margin:"18px 0 8px", borderLeft:"4px solid #000", paddingLeft:8 };
   const statGrid = { display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(90px,1fr))", gap:8, marginBottom:6 };
@@ -1708,93 +1655,210 @@ function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, o
   const th = { border:"1px solid #ddd", padding:"5px 6px", background:"#f0f0f0", fontSize:10.5, textTransform:"uppercase" };
   const td = { border:"1px solid #ddd", padding:"5px 6px", textAlign:"center" };
 
+  function buildAnalysisHTML() {
+    const inner = contentRef.current ? contentRef.current.innerHTML : "";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${label} Results Analysis</title>
+<style>
+  body{font-family:-apple-system,Arial,sans-serif;color:#111;padding:24px;}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px;}
+  th,td{border:1px solid #ddd;padding:5px 6px;text-align:center;}
+  th{background:#f0f0f0;font-size:10.5px;text-transform:uppercase;}
+  td:first-child,th:first-child{text-align:left;}
+  h1{font-size:16px;margin:0 0 2px;}
+  .sub{font-size:11px;color:#555;margin-bottom:14px;}
+  .sectionH{font-weight:800;font-size:13px;margin:18px 0 8px;border-left:4px solid #000;padding-left:8px;}
+  .statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:6px;}
+  .statBox{background:#f4f4f4;border-radius:8px;padding:10px 6px;text-align:center;}
+  .statN{font-weight:900;font-size:20px;}
+  .statL{font-weight:700;font-size:10.5px;}
+  @media print{ body{padding:8px;} }
+</style></head><body>
+<h1>${(schoolName||"Results Analysis").toUpperCase()}${schoolCounty?" — "+schoolCounty.toUpperCase():""}</h1>
+<div class="sub">📊 Results Analysis — ${label} · ${term} ${year} · ${marked.length} of ${total} learner(s) with marks entered</div>
+${inner}
+</body></html>`;
+  }
+
+  function handlePrintAnalysis() {
+    const html = buildAnalysisHTML()
+      .replace(/class="sectionH"/g, 'style="font-weight:800;font-size:13px;margin:18px 0 8px;border-left:4px solid #000;padding-left:8px;"')
+      .replace(/class="statGrid"/g, 'style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:6px;"')
+      .replace(/class="statBox"/g, 'style="background:#f4f4f4;border-radius:8px;padding:10px 6px;text-align:center;"');
+    const w = window.open("", "_blank");
+    if (!w) { alert("Please allow pop-ups to print."); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(()=>{ w.focus(); w.print(); }, 300);
+  }
+
+  async function handleDownloadAnalysis() {
+    if (typeof html2pdf === "undefined") {
+      alert("PDF generator hasn't finished loading yet — check your internet connection and try again in a moment.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await html2pdf().set({
+        margin: 0.4,
+        filename: `${label.replace(/\s+/g,"_")}_ResultsAnalysis.pdf`,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        jsPDF: { unit: "in", format: "a4", orientation: "portrait" }
+      }).from(contentRef.current).save();
+    } catch (e) {
+      alert("Could not generate the PDF. Please try again, or use 🖨 Print instead.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={box} className="no-print">
       <div style={panel}>
-        <div style={h2}>📊 Results Analysis — {label}</div>
-        <div style={{fontSize:12, color:"#666", marginTop:-8, marginBottom:14}}>{term} {year} · {marked.length} of {total} learner(s) with marks entered</div>
-
-        <div style={sectionH}>Overall Distribution</div>
-        <div style={statGrid}>
-          {["EE","ME","AE","BE"].map(lv=>(
-            <div key={lv} style={statBox}>
-              <div style={{fontWeight:900, fontSize:22}}>{levelCounts[lv]}</div>
-              <div style={{fontWeight:700, fontSize:11}}>{lv}</div>
-            </div>
-          ))}
-          <div style={statBox}>
-            <div style={{fontWeight:900, fontSize:22}}>{means["_classMean"]!=="–"?means["_classMean"]+"%":"–"}</div>
-            <div style={{fontWeight:700, fontSize:11}}>CLASS MEAN</div>
-          </div>
-          <div style={statBox}>
-            <div style={{fontWeight:900, fontSize:22}}>{passRate}%</div>
-            <div style={{fontWeight:700, fontSize:11}}>PASS RATE (ME+)</div>
-          </div>
+        <div style={{padding:"24px 24px 0"}}>
+          <div style={h2}>📊 Results Analysis — {label}</div>
+          <div style={{fontSize:12, color:"#666", marginTop:-8, marginBottom:14}}>{term} {year} · {marked.length} of {total} learner(s) with marks entered</div>
         </div>
 
-        <div style={sectionH}>Grade Distribution by Subject</div>
-        <div style={{overflowX:"auto"}}>
-          <table style={table}>
-            <thead>
-              <tr>
-                <th style={{...th,textAlign:"left"}}>Subject</th>
-                <th style={th}>Mean%</th>
-                <th style={th}>EE</th>
-                <th style={th}>ME</th>
-                <th style={th}>AE</th>
-                <th style={th}>BE</th>
-                <th style={th}>Marked</th>
-              </tr>
-            </thead>
-            <tbody>
-              {SUBJECTS.map(s=>(
-                <tr key={s}>
-                  <td style={{...td,textAlign:"left",fontWeight:700}}>{s}</td>
-                  <td style={td}>{means[s]}</td>
-                  <td style={td}>{subjectDist[s].counts.EE}</td>
-                  <td style={td}>{subjectDist[s].counts.ME}</td>
-                  <td style={td}>{subjectDist[s].counts.AE}</td>
-                  <td style={td}>{subjectDist[s].counts.BE}</td>
-                  <td style={td}>{subjectDist[s].n}</td>
-                </tr>
+        <div style={{overflowY:"auto", flex:1, padding:"0 24px"}}>
+          <div ref={contentRef}>
+            <div style={sectionH}>Overall Distribution</div>
+            <div style={statGrid}>
+              {["EE","ME","AE","BE"].map(lv=>(
+                <div key={lv} style={statBox}>
+                  <div style={{fontWeight:900, fontSize:22}}>{levelCounts[lv]}</div>
+                  <div style={{fontWeight:700, fontSize:11}}>{lv}</div>
+                </div>
               ))}
-            </tbody>
-          </table>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{means["_classMean"]!=="–"?means["_classMean"]+"%":"–"}</div>
+                <div style={{fontWeight:700, fontSize:11}}>CLASS MEAN</div>
+              </div>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{passRate}%</div>
+                <div style={{fontWeight:700, fontSize:11}}>PASS RATE (ME+)</div>
+              </div>
+            </div>
+
+            <div style={sectionH}>Performance by Gender</div>
+            <div style={statGrid}>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{means["_boysMean"]!=="–"?means["_boysMean"]+"%":"–"}</div>
+                <div style={{fontWeight:700, fontSize:11}}>BOYS MEAN ({boysMarked.length})</div>
+              </div>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{means["_girlsMean"]!=="–"?means["_girlsMean"]+"%":"–"}</div>
+                <div style={{fontWeight:700, fontSize:11}}>GIRLS MEAN ({girlsMarked.length})</div>
+              </div>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{means["_classMean"]!=="–"?means["_classMean"]+"%":"–"}</div>
+                <div style={{fontWeight:700, fontSize:11}}>GENERAL MEAN</div>
+              </div>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{boysPassRate}%</div>
+                <div style={{fontWeight:700, fontSize:11}}>BOYS PASS RATE</div>
+              </div>
+              <div style={statBox}>
+                <div style={{fontWeight:900, fontSize:22}}>{girlsPassRate}%</div>
+                <div style={{fontWeight:700, fontSize:11}}>GIRLS PASS RATE</div>
+              </div>
+            </div>
+
+            <div style={sectionH}>Grade Distribution by Subject</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={table}>
+                <thead>
+                  <tr>
+                    <th style={{...th,textAlign:"left"}}>Subject</th>
+                    <th style={th}>Mean%</th>
+                    <th style={th}>Boys Mean</th>
+                    <th style={th}>Girls Mean</th>
+                    <th style={th}>EE</th>
+                    <th style={th}>ME</th>
+                    <th style={th}>AE</th>
+                    <th style={th}>BE</th>
+                    <th style={th}>Marked</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SUBJECTS.map(s=>(
+                    <tr key={s}>
+                      <td style={{...td,textAlign:"left",fontWeight:700}}>{s} <span style={{fontWeight:400,color:"#888"}}>({subjectKey(s)})</span></td>
+                      <td style={td}>{means[s]}</td>
+                      <td style={td}>{means[s+"_M"]}</td>
+                      <td style={td}>{means[s+"_F"]}</td>
+                      <td style={td}>{subjectDist[s].counts.EE}</td>
+                      <td style={td}>{subjectDist[s].counts.ME}</td>
+                      <td style={td}>{subjectDist[s].counts.AE}</td>
+                      <td style={td}>{subjectDist[s].counts.BE}</td>
+                      <td style={td}>{subjectDist[s].n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={sectionH}>Subject Champions (Top Scorer per Subject)</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={table}>
+                <thead>
+                  <tr>
+                    <th style={{...th,textAlign:"left"}}>Subject</th>
+                    <th style={{...th,textAlign:"left"}}>Champion</th>
+                    <th style={th}>Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SUBJECTS.map(s=>(
+                    <tr key={s}>
+                      <td style={{...td,textAlign:"left",fontWeight:700}}>{s} <span style={{fontWeight:400,color:"#888"}}>({subjectKey(s)})</span></td>
+                      <td style={{...td,textAlign:"left"}}>{champions[s]?champions[s].name:"–"}</td>
+                      <td style={td}>{champions[s]?champions[s].score:"–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={sectionH}>Top 5 Performers</div>
+            {topPerformers.length === 0 ? (
+              <div style={{fontSize:12, color:"#888"}}>No marks entered yet.</div>
+            ) : (
+              <table style={table}>
+                <thead>
+                  <tr>
+                    <th style={th}>Rank</th>
+                    <th style={{...th,textAlign:"left"}}>Name</th>
+                    <th style={th}>Total</th>
+                    <th style={th}>Avg%</th>
+                    <th style={th}>Band</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topPerformers.map((l,i)=>{
+                    const g = l.total>0 ? getGrade(l.avg) : null;
+                    return (
+                      <tr key={l.name}>
+                        <td style={td}>{i+1}</td>
+                        <td style={{...td,textAlign:"left",fontWeight:700}}>{l.name}</td>
+                        <td style={td}>{l.total}</td>
+                        <td style={td}>{l.avg}%</td>
+                        <td style={td}>{g?g.sub:"–"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
 
-        <div style={sectionH}>Top 5 Performers</div>
-        {topPerformers.length === 0 ? (
-          <div style={{fontSize:12, color:"#888"}}>No marks entered yet.</div>
-        ) : (
-          <table style={table}>
-            <thead>
-              <tr>
-                <th style={th}>Rank</th>
-                <th style={{...th,textAlign:"left"}}>Name</th>
-                <th style={th}>Total</th>
-                <th style={th}>Avg%</th>
-                <th style={th}>Band</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topPerformers.map((l,i)=>{
-                const g = l.total>0 ? getGrade(l.avg) : null;
-                return (
-                  <tr key={l.name}>
-                    <td style={td}>{i+1}</td>
-                    <td style={{...td,textAlign:"left",fontWeight:700}}>{l.name}</td>
-                    <td style={td}>{l.total}</td>
-                    <td style={td}>{l.avg}%</td>
-                    <td style={td}>{g?g.sub:"–"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-
-        <div style={{display:"flex", justifyContent:"flex-end", marginTop:20}}>
-          <button style={{background:"#000",color:"#fff",border:"none",borderRadius:7,padding:"10px 24px",cursor:"pointer",fontSize:14,fontWeight:700}}
+        <div style={{display:"flex", flexWrap:"wrap", justifyContent:"flex-end", gap:8, padding:"14px 24px", borderTop:"1px solid #eee"}}>
+          <button style={{background:"#fff",color:"#000",border:"1.5px solid #888",borderRadius:7,padding:"9px 16px",cursor:"pointer",fontSize:13,fontWeight:700}}
+            onClick={handlePrintAnalysis}>🖨 Print</button>
+          <button style={{background:"#fff",color:"#000",border:"1.5px solid #888",borderRadius:7,padding:"9px 16px",cursor:"pointer",fontSize:13,fontWeight:700}}
+            disabled={busy} onClick={handleDownloadAnalysis}>{busy?"Generating PDF…":"⬇ Download PDF"}</button>
+          <button style={{background:"#000",color:"#fff",border:"none",borderRadius:7,padding:"9px 20px",cursor:"pointer",fontSize:13,fontWeight:700}}
             onClick={onClose}>Close</button>
         </div>
       </div>
@@ -1803,15 +1867,20 @@ function ResultsAnalysisModal({ ranked, levelCounts, means, label, term, year, o
 }
 
 // ─── PRINTABLE CLASS LIST ─────────────────────────────────────────────────────
-function PrintableClassList({ learners, grade, stream, term, year, classTeacher, hasScores, overallTotal, schoolName, schoolCounty }) {
+function PrintableClassList({ learners, grade, stream, term, year, classTeacher, hasScores, overallTotal, schoolName, schoolCounty, schoolPOBox, schoolMotto, schoolPhone, schoolEmail }) {
   const label = getStreamLabel(grade, stream);
   const ranked = rankLearners(learners, stream);
   const means = calcSubjectMeans(ranked);
   const filledCount = ranked.filter(l=>l.total>0).length;
+  const contactLine = [schoolPhone, schoolEmail].filter(Boolean).join(" · ");
   return (
     <div className="print-classlist" style={CL.page}>
       <div style={CL.header}>
-        <div style={CL.schoolName}>{(schoolName||"KITUU JUNIOR SCHOOL").toUpperCase()} — {(schoolCounty||"SAMBURU").toUpperCase()}</div>
+        <div style={CL.schoolName}>{(schoolName||"YOUR SCHOOL NAME").toUpperCase()}</div>
+        {schoolPOBox && <div style={CL.sub}>{schoolPOBox}</div>}
+        {schoolCounty && <div style={CL.sub}>{schoolCounty.toUpperCase()}</div>}
+        {schoolMotto && <div style={{...CL.sub,fontStyle:"italic"}}>Motto: {schoolMotto}</div>}
+        {contactLine && <div style={{...CL.sub,fontSize:9}}>{contactLine}</div>}
         <div style={CL.sub}>{label} &nbsp;|&nbsp; {term} {year}{classTeacher?` | Class Teacher: ${classTeacher}`:""}</div>
         <div style={CL.sub}>{hasScores ? "CLASS RESULTS REGISTER" : "MARK ENTRY REGISTER"}</div>
       </div>
@@ -1819,7 +1888,9 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
         <thead>
           <tr>
             <th style={{...CL.th,width:24}}>#</th>
+            <th style={{...CL.th,width:70}}>ASSM. NO.</th>
             <th style={{...CL.th,textAlign:"left",minWidth:130}}>LEARNER NAME</th>
+            <th style={{...CL.th,width:30}}>SEX</th>
             {SUBJECTS.map(s=><th key={s} style={CL.th}>{s}</th>)}
             {hasScores && <>
               <th style={CL.th}>TOTAL</th>
@@ -1837,13 +1908,16 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
             return (
               <tr key={i} style={{background:i%2===0?"#fff":"#f9f9f9"}}>
                 <td style={CL.tdC}>{i+1}</td>
+                <td style={CL.tdC}>{l.admNo||"–"}</td>
                 <td style={CL.td}>{l.name}</td>
+                <td style={CL.tdC}>{l.gender||"–"}</td>
                 {SUBJECTS.map(sub=>{
-                  const g = hasScores?getGrade(l.scores[sub]):null;
+                  const tot = subjectTotal(l.scores, sub);
+                  const g = hasScores?getGrade(tot):null;
                   return (
                     <td key={sub} style={CL.tdC}>
                       {hasScores
-                        ? <>{l.scores[sub]||"–"}{g&&<div style={{fontSize:7,fontWeight:700}}>{g.sub}</div>}</>
+                        ? <>{tot!==""?tot:"–"}{g&&<div style={{fontSize:7,fontWeight:700}}>{g.sub}</div>}</>
                         : <span style={{color:"#bbb"}}>____</span>
                       }
                     </td>
@@ -1862,7 +1936,7 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
           })}
           {hasScores && filledCount>0 && (
             <tr style={{background:"#e8e8e8",fontWeight:700,borderTop:"2px solid #000"}}>
-              <td style={CL.tdC} colSpan={2}>CLASS MEAN</td>
+              <td style={CL.tdC} colSpan={4}>CLASS MEAN ({means["_boysCount"]||0} boys, {means["_girlsCount"]||0} girls)</td>
               {SUBJECTS.map(sub=>(
                 <td key={sub} style={{...CL.tdC,fontWeight:700}}>
                   {means[sub]}{means[sub]!=="–"&&<div style={{fontSize:7}}>{getGrade(means[sub])?.sub||""}</div>}
@@ -1873,28 +1947,122 @@ function PrintableClassList({ learners, grade, stream, term, year, classTeacher,
               </td>
             </tr>
           )}
+          {hasScores && filledCount>0 && means["_boysCount"]>0 && (
+            <tr style={{background:"#eef4fb",fontWeight:600,fontSize:10.5}}>
+              <td style={CL.tdC} colSpan={4}>BOYS MEAN</td>
+              {SUBJECTS.map(sub=><td key={sub} style={CL.tdC}>{means[sub+"_M"]}</td>)}
+              <td colSpan={overallTotal>0?6:5} style={CL.tdC}>Boys Avg: <b>{means["_boysMean"]!=="–"?means["_boysMean"]+"%":"–"}</b></td>
+            </tr>
+          )}
+          {hasScores && filledCount>0 && means["_girlsCount"]>0 && (
+            <tr style={{background:"#fdeef3",fontWeight:600,fontSize:10.5}}>
+              <td style={CL.tdC} colSpan={4}>GIRLS MEAN</td>
+              {SUBJECTS.map(sub=><td key={sub} style={CL.tdC}>{means[sub+"_F"]}</td>)}
+              <td colSpan={overallTotal>0?6:5} style={CL.tdC}>Girls Avg: <b>{means["_girlsMean"]!=="–"?means["_girlsMean"]+"%":"–"}</b></td>
+            </tr>
+          )}
         </tbody>
       </table>
-      <div style={CL.footer}>{schoolName||"Kituu Junior School"} · {term} {year} · {label} · {new Date().toLocaleDateString()}</div>
+      <div style={{fontSize:8.5,color:"#555",marginTop:4,lineHeight:1.5}}>
+        <b>Key:</b> {SUBJECTS.map(s=>`${s} = ${subjectKey(s)}`).join("  ·  ")}
+      </div>
+      <div style={CL.footer}>{schoolName||"Your School Name"} · {term} {year} · {label} · {new Date().toLocaleDateString()}</div>
     </div>
   );
 }
 
+// ─── LEARNER TREND CHART ─────────────────────────────────────────────────────
+// Compact, full-width line chart of a learner's exam mean (%) across every exam on record.
+// The viewBox is a fixed width so the chart always runs edge-to-edge of the report form
+// and its printed height stays small and constant, however many exams there are.
+function TrendChart({ data }) {
+  const pts = data || [];
+  const real = pts.filter(d => typeof d.avg === "number" && !isNaN(d.avg));
+  if (real.length < 2) return null;
+  const n = pts.length;
+  const W = 640, padL = 26, padR = 16, padT = 13;
+  const innerW = W - padL - padR;
+  const spacing = n > 1 ? innerW / (n - 1) : innerW;
+  const rotate = spacing < 50;            // few exams -> flat labels; many -> slanted
+  const padB = rotate ? 36 : 17;
+  const innerH = 50;
+  const H = padT + innerH + padB;
+  const vals = real.map(d => d.avg);
+  let lo = Math.max(0, Math.floor((Math.min(...vals) - 10) / 10) * 10);
+  let hi = Math.min(100, Math.ceil((Math.max(...vals) + 10) / 10) * 10);
+  if (hi - lo < 30) { lo = Math.max(0, hi - 30); if (hi - lo < 30) hi = lo + 30; }
+  const mid = Math.round((lo + hi) / 2);
+  const xAt = i => n > 1 ? padL + (innerW * i) / (n - 1) : padL + innerW / 2;
+  const yAt = v => padT + innerH - ((Math.max(lo, Math.min(hi, v)) - lo) * innerH) / (hi - lo);
+  const marks = pts.map(d => (typeof d.avg === "number" && !isNaN(d.avg)) ? d.avg : null);
+  const segs = []; let cur = [];
+  marks.forEach((v, i) => { if (v == null) { if (cur.length) segs.push(cur); cur = []; } else cur.push([i, v]); });
+  if (cur.length) segs.push(cur);
+  const path = segs.map(sg => sg.map(([i, v], k) => `${k === 0 ? "M" : "L"}${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(" ")).join(" ");
+  const showVals = spacing >= 24;
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:"block",background:"#fff",overflow:"visible"}}>
+      {[lo, mid, hi].map(g => (
+        <g key={g}>
+          <line x1={padL} y1={yAt(g)} x2={W-padR} y2={yAt(g)} stroke="#e3e3e3" strokeWidth="0.8" />
+          <text x={padL-4} y={yAt(g)+2.2} fontSize="6.5" textAnchor="end" fill="#666">{g}</text>
+        </g>
+      ))}
+      <line x1={padL} y1={padT} x2={padL} y2={padT+innerH} stroke="#333" strokeWidth="0.9" />
+      <line x1={padL} y1={padT+innerH} x2={W-padR} y2={padT+innerH} stroke="#333" strokeWidth="0.9" />
+      <path d={path} fill="none" stroke="#2e7d4f" strokeWidth="1.6" />
+      {pts.map((d, i) => {
+        const mx = xAt(i), v = marks[i];
+        const nearTop = v != null && yAt(v) < padT + 7;
+        return (
+          <g key={i}>
+            {v != null && (
+              <g>
+                <g transform={`translate(${mx},${yAt(v)}) rotate(45)`}>
+                  <rect x="-2.6" y="-2.6" width="5.2" height="5.2" fill="#2e7d4f" />
+                </g>
+                {showVals && (
+                  <text x={mx} y={nearTop ? yAt(v)+10 : yAt(v)-5} fontSize="6.3" textAnchor="middle" fill="#111"
+                        fontWeight={d.current ? "800" : "600"}>{Math.round(v)}</text>
+                )}
+              </g>
+            )}
+            {rotate ? (
+              <text x={0} y={0} fontSize="6.3" fill="#333" textAnchor="end"
+                    transform={`translate(${mx+2},${padT+innerH+6}) rotate(-55)`}
+                    fontWeight={d.current ? "800" : "400"}>{d.label}</text>
+            ) : (
+              <text x={mx} y={padT+innerH+11} fontSize="6.8" fill="#333" textAnchor="middle"
+                    fontWeight={d.current ? "800" : "400"}>{d.label}</text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ─── REPORT CARD ─────────────────────────────────────────────────────────────
-function ReportCard({ learner, grade, stream, term, year, classTeacher, closingDay, openingDay, totalInClass, overallTotal, comment, prevTotal, subjectRanks, examHistory, schoolName, schoolCounty, schoolMotto }) {
+function ReportCard({ learner, grade, stream, term, year, classTeacher, closingDay, openingDay, totalInClass, overallTotal, comment, prevTotal, subjectRanks, examHistory, schoolName, schoolCounty, schoolMotto, schoolPOBox, schoolPhone, schoolEmail }) {
   const label = stream ? `Grade ${grade} ${stream}` : `Grade ${grade}`;
   const overallGrade = learner.total>0 ? getGrade(learner.avg) : null;
   const hasOverall = overallTotal>0;
+  const contactLine = [schoolPhone, schoolEmail].filter(Boolean).join(" · ");
   return (
     <div className="report-card" data-name={learner.name} style={RC.page}>
       <div style={RC.header}>
-        <div style={RC.schoolName}>{(schoolName||"Kituu Junior School").toUpperCase()}</div>
-        <div style={RC.schoolSub}>{schoolCounty||"Samburu"} · Junior Secondary School</div>
+        <div style={RC.schoolName}>{(schoolName||"Your School Name").toUpperCase()}</div>
+        {schoolPOBox && <div style={RC.schoolSub}>{schoolPOBox}</div>}
+        {schoolCounty && <div style={RC.schoolSub}>{schoolCounty.toUpperCase()}</div>}
+        {schoolMotto && <div style={{...RC.schoolSub,fontStyle:"italic"}}>Motto: {schoolMotto}</div>}
+        {contactLine && <div style={{...RC.schoolSub,fontSize:9}}>{contactLine}</div>}
         <div style={RC.reportTitle}>LEARNER'S {term.toUpperCase()} PROGRESS REPORT — {year}</div>
       </div>
 
       <div style={RC.infoRow}>
+        <div style={RC.infoBlock}><span style={RC.infoLabel}>ASSESSMENT NO:</span><span style={RC.infoVal}>{learner.admNo||"—"}</span></div>
         <div style={RC.infoBlock}><span style={RC.infoLabel}>LEARNER:</span><span style={RC.infoVal}>{learner.name}</span></div>
+        {learner.gender && <div style={RC.infoBlock}><span style={RC.infoLabel}>GENDER:</span><span style={RC.infoVal}>{learner.gender==="M"?"Boy":"Girl"}</span></div>}
         <div style={RC.infoBlock}><span style={RC.infoLabel}>CLASS:</span><span style={RC.infoVal}>{label}</span></div>
         <div style={RC.infoBlock}><span style={RC.infoLabel}>TERM:</span><span style={RC.infoVal}>{term}</span></div>
         {classTeacher&&<div style={RC.infoBlock}><span style={RC.infoLabel}>CLASS TEACHER:</span><span style={RC.infoVal}>{classTeacher}</span></div>}
@@ -1913,12 +2081,13 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
         </thead>
         <tbody>
           {SUBJECTS.map((sub,i)=>{
-            const g=getGrade(learner.scores[sub]);
+            const tot = subjectTotal(learner.scores, sub);
+            const g=getGrade(tot);
             const sRank = subjectRanks && subjectRanks[sub] ? subjectRanks[sub] : "–";
             return (
               <tr key={sub} style={{background:i%2===0?"#fff":"#f5f5f5"}}>
-                <td style={RC.td}><b>{sub}</b></td>
-                <td style={{...RC.tdC,fontWeight:800,fontSize:14}}>{learner.scores[sub]||"–"}</td>
+                <td style={RC.td}><b>{subjectKey(sub)}</b></td>
+                <td style={{...RC.tdC,fontWeight:800,fontSize:12}}>{tot!==""?tot:"–"}</td>
                 <td style={RC.tdC}>{g?<span style={RC.codeBadge}>{g.sub}</span>:"–"}</td>
                 <td style={{...RC.tdC,fontWeight:700}}>{g?.points||"–"}</td>
                 <td style={{...RC.tdC,fontWeight:700,color:"#1d4ed8"}}>{sRank}</td>
@@ -1955,7 +2124,7 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
         if (!anyData) return null;
         const strongest = pathways.reduce((a,b)=> b.percent > a.percent ? b : a, pathways[0]);
         return (
-          <div style={{marginBottom:10}}>
+          <div style={{marginBottom:6}}>
             <div style={RC.sectionTitle}>PATHWAY PERFORMANCE PROFILE</div>
             <table style={RC.table}>
               <thead>
@@ -1984,7 +2153,7 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
                 ))}
               </tbody>
             </table>
-            <div style={{fontSize:9.5,color:"#222",marginTop:2}}>
+            <div style={{fontSize:9,color:"#222",marginTop:1}}>
               <b>Strongest Pathway: {strongest.name} ({strongest.percent}%).</b> The learner demonstrates a
               {" "}{strongest.percent>=70?"strong":strongest.percent>=50?"developing":"emerging"} inclination
               towards the {strongest.name} pathway based on the areas assessed this term.
@@ -1993,28 +2162,47 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
         );
       })()}
 
+      {examHistory && examHistory.filter(d=>typeof d.avg==="number" && !isNaN(d.avg)).length >= 2 && (
+        <div style={{marginBottom:6}}>
+          <div style={{...RC.sectionTitle,display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
+            <span>PERFORMANCE OVER TIME</span>
+            <span style={{fontWeight:600,fontSize:7.5,letterSpacing:0,textTransform:"none",color:"#333"}}>
+              <span style={{display:"inline-block",width:7,height:7,background:"#2e7d4f",transform:"rotate(45deg)",marginRight:4}}></span>Exam mean (%)
+            </span>
+          </div>
+          <TrendChart data={examHistory} />
+        </div>
+      )}
+
+      {comment && String(comment).trim() && (
+        <div style={{marginBottom:6}}>
+          <div style={RC.sectionTitle}>CLASS TEACHER'S COMMENT</div>
+          <div style={{border:"1px solid #bbb",padding:"4px 7px",fontSize:10,minHeight:18,whiteSpace:"pre-wrap",color:"#000"}}>{comment}</div>
+        </div>
+      )}
+
       <div style={RC.bottomRow}>
-        <div style={RC.gradingKey}>
+        <div style={{flex:1,minWidth:0}}>
           <div style={RC.keyTitle}>GRADING KEY</div>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:9}}>
-            <thead><tr style={{background:"#000",color:"#fff"}}><th style={RC.kth}>Code</th><th style={RC.kth}>Range</th><th style={RC.kth}>Pts</th></tr></thead>
-            <tbody>{GRADES.map(g=>(
-              <tr key={g.sub}>
-                <td style={{...RC.ktd,fontWeight:700}}>{g.sub}</td>
-                <td style={RC.ktd}>{g.min}–{g.max}%</td>
-                <td style={RC.ktd}>{g.points}</td>
-              </tr>
-            ))}</tbody>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:8}}>
+            <thead><tr style={{background:"#000",color:"#fff"}}>
+              <th style={RC.kth}>Code</th>
+              {GRADES.map(g=><th key={g.sub} style={RC.kth}>{g.sub}</th>)}
+            </tr></thead>
+            <tbody>
+              <tr><td style={{...RC.ktd,fontWeight:700}}>Range</td>{GRADES.map(g=><td key={g.sub} style={RC.ktd}>{g.min}–{g.max}%</td>)}</tr>
+              <tr><td style={{...RC.ktd,fontWeight:700}}>Pts</td>{GRADES.map(g=><td key={g.sub} style={RC.ktd}>{g.points}</td>)}</tr>
+            </tbody>
           </table>
         </div>
-        <div style={RC.datesBox}>
+        <div style={{...RC.datesBox,flex:"0 0 138px"}}>
           <div style={RC.keyTitle}>CLASS INFORMATION</div>
-          <div style={RC.datesLine}>Closing Day: <b>{fmtDate(closingDay)}</b></div>
-          <div style={RC.datesLine}>Opening Day: <b>{fmtDate(openingDay)}</b></div>
+          <div style={{...RC.datesLine,marginBottom:3}}>Closing Day: <b>{fmtDate(closingDay)}</b></div>
+          <div style={{...RC.datesLine,marginBottom:0}}>Opening Day: <b>{fmtDate(openingDay)}</b></div>
           {/* Exam progress table removed */}
         </div>
       </div>
-      <div style={RC.footer}>{term} {year} · {schoolName||"Kituu Junior School"}, {schoolCounty||"Samburu"}{schoolMotto?(" · "+schoolMotto):""}</div>
+      <div style={RC.footer}>{term} {year} · {schoolName||"Your School Name"}{schoolCounty?(", "+schoolCounty):""}</div>
     </div>
   );
 }
@@ -2023,44 +2211,62 @@ function ReportCard({ learner, grade, stream, term, year, classTeacher, closingD
 function ScoreEntryModal({ learner, grade, splitMode, classOptions, onSave, onClose }) {
   const [scores, setScores] = useState({...blankScores(),...learner.scores});
   const [name, setName] = useState(learner.name);
+  const [admNo, setAdmNo] = useState(learner.admNo || "");
+  const [gender, setGender] = useState(learner.gender || "");
   const opts = (classOptions && classOptions.length ? classOptions : [""]);
   const [streamSel, setStreamSel] = useState(learner.stream || opts[0] || "");
   return (
     <div style={M.overlay}>
-      <div style={M.box}>
-        <div style={M.title}>Edit Learner — {learner.name}</div>
-        <div style={{display:"flex",gap:11,marginBottom:14,flexWrap:"wrap"}}>
-          <div style={{...M.field,flex:2,minWidth:180}}>
-            <label style={M.label}>Full Name</label>
-            <input style={M.input} value={name} onChange={e=>setName(e.target.value.toUpperCase())} />
-          </div>
-          {splitMode && (
-            <div style={{...M.field,flex:1,minWidth:120}}>
-              <label style={M.label}>Class</label>
-              <select style={M.input} value={streamSel} onChange={e=>setStreamSel(e.target.value)}>
-                {opts.map(s => <option key={s||"main"} value={s}>{s || "Main"}</option>)}
+      <div style={M.boxScroll}>
+        <div style={{padding:"20px 20px 0"}}>
+          <div style={M.title}>Edit Learner — {learner.name}</div>
+          <div style={{display:"flex",gap:11,marginBottom:14,flexWrap:"wrap"}}>
+            <div style={{...M.field,flex:1,minWidth:130}}>
+              <label style={M.label}>Assessment No.</label>
+              <input style={M.input} value={admNo} onChange={e=>setAdmNo(e.target.value)} placeholder="e.g. 0142" />
+            </div>
+            <div style={{...M.field,flex:2,minWidth:180}}>
+              <label style={M.label}>Full Name</label>
+              <input style={M.input} value={name} onChange={e=>setName(e.target.value.toUpperCase())} />
+            </div>
+            <div style={{...M.field,flex:1,minWidth:110}}>
+              <label style={M.label}>Gender</label>
+              <select style={M.input} value={gender} onChange={e=>setGender(e.target.value)}>
+                <option value="">–</option>
+                <option value="M">Boy</option>
+                <option value="F">Girl</option>
               </select>
             </div>
-          )}
+            {splitMode && (
+              <div style={{...M.field,flex:1,minWidth:120}}>
+                <label style={M.label}>Class</label>
+                <select style={M.input} value={streamSel} onChange={e=>setStreamSel(e.target.value)}>
+                  {opts.map(s => <option key={s||"main"} value={s}>{s || "Main"}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
         </div>
-        <div style={M.grid}>
-          {SUBJECTS.map(sub=>(
-            <div key={sub} style={M.field}>
-              <label style={M.label}>{sub}</label>
-              <input style={M.input} type="number" min="0" max="100"
-                value={scores[sub]}
-                onChange={e=>{
-                  let v = e.target.value;
-                  if (v!=="" && !isNaN(v)) { v = Math.max(0, Math.min(100, Number(v))); }
-                  setScores(p=>({...p,[sub]:v}));
-                }}
-                placeholder="–" />
-            </div>
-          ))}
+        <div style={{overflowY:"auto",flex:1,padding:"0 20px"}}>
+          <div style={M.grid}>
+            {SUBJECTS.map(sub=>(
+              <div key={sub} style={M.field}>
+                <label style={M.label}>{sub}</label>
+                <input style={M.input} type="number" min="0" max="100"
+                  value={scores[sub]}
+                  onChange={e=>{
+                    let v = e.target.value;
+                    if (v!=="" && !isNaN(v)) { v = Math.max(0, Math.min(100, Number(v))); }
+                    setScores(p=>({...p,[sub]:v}));
+                  }}
+                  placeholder="–" />
+              </div>
+            ))}
+          </div>
         </div>
-        <div style={M.actions}>
+        <div style={{...M.actions,padding:"14px 20px",margin:0,borderTop:"1px solid #eee",background:"#fff"}}>
           <button style={M.cancel} onClick={onClose}>Cancel</button>
-          <button style={M.save} onClick={()=>onSave({name:name.trim()||learner.name, scores, stream:streamSel})}>Save</button>
+          <button style={M.save} onClick={()=>onSave({name:name.trim()||learner.name, admNo:admNo.trim(), gender, scores, stream:streamSel})}>Save</button>
         </div>
       </div>
     </div>
@@ -2069,6 +2275,8 @@ function ScoreEntryModal({ learner, grade, splitMode, classOptions, onSave, onCl
 
 function AddLearnerModal({ grade, splitMode, defaultStream, classOptions, onAdd, onClose }) {
   const [name, setName] = useState("");
+  const [admNo, setAdmNo] = useState("");
+  const [gender, setGender] = useState("");
   const opts = (classOptions && classOptions.length ? classOptions : [""]);
   const [streamSel, setStreamSel] = useState(defaultStream || opts[0] || "");
   return (
@@ -2076,8 +2284,20 @@ function AddLearnerModal({ grade, splitMode, defaultStream, classOptions, onAdd,
       <div style={{...M.box,maxWidth:360}}>
         <div style={M.title}>Add New Learner</div>
         <div style={M.field}>
+          <label style={M.label}>Assessment No.</label>
+          <input style={M.input} value={admNo} onChange={e=>setAdmNo(e.target.value)} placeholder="e.g. 0142"/>
+        </div>
+        <div style={M.field}>
           <label style={M.label}>Full Name</label>
           <input style={M.input} value={name} onChange={e=>setName(e.target.value.toUpperCase())} placeholder="e.g. JANE WANJIKU"/>
+        </div>
+        <div style={M.field}>
+          <label style={M.label}>Gender</label>
+          <select style={M.input} value={gender} onChange={e=>setGender(e.target.value)}>
+            <option value="">–</option>
+            <option value="M">Boy</option>
+            <option value="F">Girl</option>
+          </select>
         </div>
         {splitMode && (
           <div style={M.field}>
@@ -2089,7 +2309,7 @@ function AddLearnerModal({ grade, splitMode, defaultStream, classOptions, onAdd,
         )}
         <div style={M.actions}>
           <button style={M.cancel} onClick={onClose}>Cancel</button>
-          <button style={M.save} onClick={()=>{if(name.trim())onAdd(name.trim(),streamSel);}}>Add Learner</button>
+          <button style={M.save} onClick={()=>{if(name.trim())onAdd(name.trim(),streamSel,admNo.trim(),gender);}}>Add Learner</button>
         </div>
       </div>
     </div>
@@ -2224,26 +2444,40 @@ function App() {
   const [classesConfigLoaded, setClassesConfigLoaded] = useState(false);
 
   // Admin-editable school details, shown everywhere the app used to hardcode text.
-  const [schoolName, setSchoolName] = useState("Kituu Junior School");
-  const [schoolCounty, setSchoolCounty] = useState("Samburu");
+  const [schoolName, setSchoolName] = useState("");
+  const [schoolCounty, setSchoolCounty] = useState("");
   const [schoolMotto, setSchoolMotto] = useState("");
+  const [schoolPOBox, setSchoolPOBox] = useState("");
+  const [schoolPhone, setSchoolPhone] = useState("");
+  const [schoolEmail, setSchoolEmail] = useState("");
 
   function getAllClasses() {
     return Object.entries(classesConfig).flatMap(([g, arr]) =>
       (arr && arr.length ? arr : [""]).map(s => ({ grade: g, stream: s })));
   }
 
+  // Guarantee Grade 7/8/9 always exist with at least one class, no matter
+  // what's actually stored (handles a missing key or an emptied-out grade).
+  function normalizeClassesConfig(cfg) {
+    const base = { ...(cfg || {}) };
+    ["7","8","9"].forEach(g => { if (!base[g] || !base[g].length) base[g] = [""]; });
+    return base;
+  }
+
   // Load classes config + school details from the shared database once connected.
   useEffect(()=>{
     (async()=>{
       const cfg = await loadShared("sision_classes_config", null);
-      setClassesConfig(cfg && Object.keys(cfg).length ? cfg : {"7":[""],"8":[""],"9":[""]});
+      setClassesConfig(await cleanClassesConfig(normalizeClassesConfig(cfg)));
       setClassesConfigLoaded(true);
       const sc = await loadShared("sision_school_config", null);
       if (sc) {
-        setSchoolName(sc.name || "Kituu Junior School");
-        setSchoolCounty(sc.county || "Samburu");
+        setSchoolName(sc.name || "");
+        setSchoolCounty(sc.county || "");
         setSchoolMotto(sc.motto || "");
+        setSchoolPOBox(sc.poBox || "");
+        setSchoolPhone(sc.phone || "");
+        setSchoolEmail(sc.email || "");
         if (sc.name) document.title = sc.name + " — Results";
       }
     })();
@@ -2267,6 +2501,7 @@ function App() {
   const [showHistory, setShowHistory]       = useState(false);
   const [showComment, setShowComment]       = useState(false);
   const [comment, setComment]               = useState("");
+  const [commentSaved, setCommentSaved]     = useState(false);
   const [searchTerm, setSearchTerm]         = useState("");
   const [prevTermMap, setPrevTermMap]       = useState({});
   const [saved, setSaved]                   = useState(false);
@@ -2280,6 +2515,21 @@ function App() {
   const [subjectYear, setSubjectYear]       = useState(()=>localStorage.getItem("sision_last_year")||"2026");
   const [subjectList, setSubjectList]       = useState([]); // [{name, score}]
   const [subjectLoading, setSubjectLoading] = useState(false);
+  // Marks typed but not yet uploaded. While true, nothing may reload/overwrite the list.
+  const [subjectDirty, setSubjectDirty]     = useState(false);
+  const subjectDirtyRef  = useRef(false);
+  const subjectLoadSeq   = useRef(0);
+  const subjectListKeyRef = useRef("");
+  function markSubjectDirty(v) { subjectDirtyRef.current = v; setSubjectDirty(v); }
+  // Ask before a Term / Year / Subject change throws away typed-but-unuploaded marks.
+  function okToLeaveSubjectList() {
+    if (!subjectDirtyRef.current) return true;
+    if (confirm("You have marks typed that are NOT uploaded yet.\n\nChanging this will erase them.\n\nTap Cancel, then press ⬆ Upload first.\n\nErase and continue?")) {
+      markSubjectDirty(false);
+      return true;
+    }
+    return false;
+  }
 
   // A returning subject-teacher session (e.g. after a page reload) restores
   // userSession from localStorage but not subjectSession — rebuild it here.
@@ -2321,6 +2571,8 @@ function App() {
 
     async function loadSubjectEntryList() {
     if (!subjectSession || !subjectClass || !subjectChoice) return;
+    const seq = ++subjectLoadSeq.current;
+    const listKey = `${subjectClass.grade}|${subjectClass.stream||""}|${subjectChoice}|${subjectTerm}|${subjectYear}`;
     setSubjectLoading(true);
     setSubjectNotConnected(false);
     try {
@@ -2329,14 +2581,45 @@ function App() {
       const roster = (await loadShared(learnersKey(subjectClass.grade, subjectClass.stream), [])) || [];
       const scoresArr = await loadShared(storageKey(subjectClass.grade, subjectClass.stream, subjectTerm, subjectYear), null);
       const scoreMap = {};
-      if (scoresArr) scoresArr.forEach(l => { scoreMap[l.name] = (l.scores && l.scores[subjectChoice]) || ""; });
-      const list = roster.map(l => ({ name: l.name, score: scoreMap[l.name] || "" }));
+      if (scoresArr) scoresArr.forEach(l => {
+        scoreMap[l.name] = (l.scores && l.scores[subjectChoice]) ?? "";
+      });
+      const list = roster.map(l => ({ name: l.name, admNo: l.admNo||"", score: scoreMap[l.name] ?? "" }));
       list.sort((a,b)=>a.name.localeCompare(b.name));
+      // A newer load superseded this one — drop this result.
+      if (seq !== subjectLoadSeq.current) return;
+      // Same class/subject/term already on screen with unsaved typing: keep the typing.
+      if (subjectDirtyRef.current && subjectListKeyRef.current === listKey) return;
+      subjectListKeyRef.current = listKey;
+      markSubjectDirty(false);
       setSubjectList(list);
     } finally {
-      setSubjectLoading(false);
+      if (seq === subjectLoadSeq.current) setSubjectLoading(false);
     }
   }
+
+  // Map a teacher's assigned classes onto the classes that really exist. An old
+  // assignment to the blank "Main" class becomes East/West (whichever exist).
+  function resolveSubjectClasses(list) {
+    const out = [], seen = new Set();
+    (list || []).forEach(c => {
+      const streams = classesConfig[c.grade] || [""];
+      const st = c.stream || "";
+      const targets = streams.includes(st) ? [st] : (st === "" ? streams : []);
+      targets.forEach(x => { const k = c.grade + "|" + x; if (!seen.has(k)) { seen.add(k); out.push({ grade: c.grade, stream: x }); } });
+    });
+    return out;
+  }
+  useEffect(() => {
+    if (!classesConfigLoaded || !subjectSession || !subjectClass) return;
+    const streams = classesConfig[subjectClass.grade] || [""];
+    if (!streams.includes(subjectClass.stream || "")) {
+      const r = resolveSubjectClasses(subjectSession.classes);
+      if (r.length === 1) setSubjectClass(r[0]);
+      else { setSubjectClass(null); setPage("subjectClassPick"); }
+    }
+    // eslint-disable-next-line
+  }, [classesConfigLoaded, classesConfig, subjectSession, subjectClass]);
 
   async function uploadSubjectScores() {
     if (!subjectSession || !subjectClass || !subjectChoice) return;
@@ -2349,6 +2632,7 @@ function App() {
       const key = storageKey(subjectClass.grade, subjectClass.stream, subjectTerm, subjectYear);
       const ok = await saveSubjectScores(key, subjectChoice, updates, rosterNames);
       if (ok) {
+        markSubjectDirty(false);
         setSubjectSaved(true);
         setTimeout(()=>setSubjectSaved(false), 2500);
       } else {
@@ -2363,7 +2647,7 @@ function App() {
     if (page === "subjectEntry") loadSubjectEntryList();
     // eslint-disable-next-line
 
-  }, [page, subjectClass, subjectChoice, subjectTerm, subjectYear]);
+  }, [page, subjectClass && subjectClass.grade, subjectClass && subjectClass.stream, subjectChoice, subjectTerm, subjectYear]);
   const [saving, setSaving]                 = useState(false);
   const [dirty, setDirty]                   = useState(false);
   // "rank" = sorted by performance, "name" = alphabetical (handy for entering marks)
@@ -2420,84 +2704,99 @@ function App() {
   // subjectRankMap[learnerName][subject] = "3/62"
   const subjectRankMap = calcSubjectRanks(combinedForRanks);
 
-  // Exam history state — all terms from Mid Term 2 2026 up to AND INCLUDING current term
-  const [examHistoryMap, setExamHistoryMap] = useState({});
+  // Keep the selected term valid for the selected grade (Grade 9 has Assessment 1/2/Final in Term 3).
+  useEffect(()=>{ const n = normTerm(term, grade); if (n !== term) setTerm(n); },[grade, term]);
   useEffect(()=>{
-    if (page!=="results") return;
+    if (!subjectClass) return;
+    const n = normTerm(subjectTerm, subjectClass.grade);
+    if (n !== subjectTerm) setSubjectTerm(n);
+  },[subjectClass, subjectTerm]);
+
+  // ── Exam history (feeds the "Performance over time" trend on each report form) ──
+  // Walks back through every earlier term, earlier years AND earlier grades (7 -> 8 -> 9),
+  // so a learner's full JSS journey shows. Earlier results are read from the saved term
+  // records (they are never altered); the CURRENT term is added live from the marks on screen,
+  // so the trend always matches what is being printed.
+  const [pastHist, setPastHist] = useState({ key: "", map: {}, curLabel: "" });
+  const histKey = `${grade}|${term}|${year}`;
+  useEffect(()=>{
+    // Wait for the real class list: until then classesConfig is only a placeholder
+    // (one blank class per grade) and every split class's saved terms would be missed.
+    if (page!=="results" || !classesConfigLoaded) return;
     let active = true;
     (async()=>{
-      const START_TERM = "Mid Term 2";
-      const START_YEAR = 2026;
+      const curGradeNum = parseInt(grade);
       const curY = parseInt(year);
-      const curIdx = TERMS.indexOf(term);
-      const startIdx = TERMS.indexOf(START_TERM);
+      const curTerm = normTerm(term, grade);
 
-      // Build chronological list of all term/year combos from MT2 2026 to current (inclusive)
       const allTermYears = [];
-      let y = START_YEAR;
-      let tidx = startIdx;
-      while (y < curY || (y === curY && tidx <= curIdx)) {
-        const shortYear = y !== curY ? ` '${String(y).slice(2)}` : "";
-        const shortTerm = TERMS[tidx].replace("Mid Term","MT").replace("End Term","ET");
-        allTermYears.push({
-          label: shortTerm + shortYear,
-          term: TERMS[tidx],
-          year: String(y),
-          isCurrent: y === curY && tidx === curIdx
-        });
-        tidx++;
-        if (tidx >= TERMS.length) { tidx = 0; y++; }
-      }
-
-      const allNames = combinedForRanks.map(l => l.name);
-      const histMap = {};
-      allNames.forEach(n => histMap[n] = []);
-
-      for (const { label, term: t, year: ry, isCurrent } of allTermYears) {
-        if (isCurrent) {
-          // Use already-loaded ranked data — no extra fetch needed
-          combinedForRanks.forEach(l => {
-            if (!histMap[l.name]) return;
-            const hasSc = SUBJECTS.some(s => Number(l.scores?.[s]) > 0);
-            histMap[l.name].push({
-              label,
-              level: hasSc ? (l.level || "–") : "–",
-              points: hasSc ? (l.points || "–") : "–"
-            });
-          });
-        } else {
-          let allData = [];
-          if (isSplitGrade(grade)) {
-            const e = (await loadShared(storageKey(grade,"East",t,ry), [])) || [];
-            const w = (await loadShared(storageKey(grade,"West",t,ry), [])) || [];
-            allData = [...e, ...w];
-          } else {
-            allData = (await loadShared(storageKey(grade,"",t,ry), [])) || [];
-          }
-          const dataMap = {};
-          allData.forEach(l => { dataMap[l.name] = l; });
-          allNames.forEach(name => {
-            if (!histMap[name]) return;
-            const l = dataMap[name];
-            if (l) {
-              const sc = l.scores || {};
-              const hasSc = SUBJECTS.some(s => Number(sc[s]) > 0);
-              const pts = SUBJECTS.map(s => getGrade(sc[s])?.points||0).reduce((a,b)=>a+b,0);
-              const ptAvg = SUBJECTS.length ? pts/SUBJECTS.length : 0;
-              let lvl = "BE";
-              if (ptAvg>=7.5) lvl="EE"; else if (ptAvg>=5.5) lvl="ME"; else if (ptAvg>=3.0) lvl="AE";
-              histMap[name].push({ label, level: hasSc?lvl:"–", points: hasSc?pts:"–" });
-            } else {
-              histMap[name].push({ label, level: "–", points: "–" });
-            }
+      for (let gNum = 7; gNum <= curGradeNum; gNum++) {
+        const gStr = String(gNum);
+        const gYear = curY - (curGradeNum - gNum);   // one grade per calendar year
+        const TLg = termsFor(gStr);                  // Grade 9 has its own Term 3 assessments
+        const lastIdx = (gNum === curGradeNum) ? TLg.indexOf(curTerm) : TLg.length - 1;
+        for (let tidx = 0; tidx <= lastIdx && tidx < TLg.length; tidx++) {
+          allTermYears.push({
+            label: (curGradeNum > 7 ? `G${gNum} ` : "") + shortTermLabel(TLg[tidx]) + ` '${String(gYear).slice(2)}`,
+            grade: gStr, term: TLg[tidx], year: String(gYear),
+            isCurrent: gNum === curGradeNum && tidx === lastIdx
           });
         }
       }
-      if (active) setExamHistoryMap(histMap);
+
+      const names = combinedForRanks.map(l => l.name);
+      const map = {};
+      names.forEach(n => map[n] = []);
+      let curLabel = "";
+
+      for (const { label, grade: g, term: t, year: ry, isCurrent } of allTermYears) {
+        if (isCurrent) { curLabel = label; continue; }
+        // Read every class this grade has ever stored results under — the current classes,
+        // the blank "Main" class (results saved before a grade was split) and legacy East/West —
+        // so no saved term is lost when classes are renamed, split or merged.
+        const streams = Array.from(new Set([...(classesConfig[g] || [""]), "", "East", "West"]));
+        const lists = await Promise.all(streams.map(st => loadShared(storageKey(g, st, t, ry), [])));
+        const byName = {};
+        lists.forEach(lst => (lst || []).forEach(l => {
+          if (!l || !l.name) return;
+          const has = SUBJECTS.some(sb => Number((l.scores||{})[sb]) > 0);
+          if (!byName[l.name] || (has && !byName[l.name].has)) byName[l.name] = { rec: l, has };
+        }));
+        names.forEach(name => {
+          const hit = byName[name];
+          if (hit && hit.has) {
+            const st = calcStats(hit.rec.scores || {});
+            map[name].push({ label, level: st.level, points: st.points, avg: Number(st.avg), current: false });
+          } else {
+            map[name].push({ label, level: "–", points: null, avg: null, current: false });
+          }
+        });
+      }
+      if (active) setPastHist({ key: histKey, map, curLabel });
     })();
     return ()=>{ active=false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[page, grade, term, year]);
+  },[page, grade, term, year, classesConfigLoaded]);
+
+  // Per-learner history = saved earlier exams + the live current exam, with leading blank
+  // terms trimmed so each chart starts exactly where that learner's real results begin
+  // (gaps in the middle stay — those are genuinely missing exams).
+  const examHistoryMap = {};
+  {
+    const past = pastHist.key === histKey ? pastHist : { map: {}, curLabel: "" };
+    combinedForRanks.forEach(l => {
+      const hasSc = SUBJECTS.some(sb => Number(l.scores?.[sb]) > 0);
+      const arr = [...(past.map[l.name] || []), {
+        label: past.curLabel || shortTermLabel(term),
+        level: hasSc ? (l.level || "–") : "–",
+        points: hasSc ? (l.points ?? null) : null,
+        avg: hasSc ? Number(l.avg) : null,
+        current: true
+      }];
+      const first = arr.findIndex(d => d.avg != null || d.points != null);
+      examHistoryMap[l.name] = first === -1 ? [] : arr.slice(first);
+    });
+  }
 
   useEffect(()=>{
     function handleBeforeUnload(e) {
@@ -2511,7 +2810,7 @@ function App() {
     if (page!=="results") return;
     let active = true;
     (async()=>{
-      const { prevTerm, prevYear } = getPrevTermYear(term, year);
+      const { prevTerm, prevYear } = getPrevTermYear(term, year, grade);
       const map = {};
       const addFromList = (lst) => {
         (lst||[]).forEach(l=>{
@@ -2543,23 +2842,30 @@ function App() {
   },[page, grade, commentScope, term, year]);
 
   async function saveComment(text) {
+    if (!GH) { alert("Not connected to GitHub. The comment was NOT saved."); return; }
+    const ok = await saveShared(commentKey(grade, commentScope, term, year), text);
+    if (!ok) {
+      alert("The comment could not be saved. Check your internet connection and GitHub token, then tap Save Comment again.");
+      return; // keep the box open so the text isn't lost
+    }
     setComment(text);
-    await saveShared(commentKey(grade, commentScope, term, year), text);
     setShowComment(false);
+    setCommentSaved(true);
+    setTimeout(()=>setCommentSaved(false), 3000);
   }
 
   // ── storage helpers ────────────────────────────────────────────────────
   async function loadOneLearnersList(gr, str) {
     const lk = learnersKey(gr, str||"");
     const stored = await loadShared(lk, null);
-    // Only use the names from the saved roster — NEVER carry over its scores,
-    // since those scores belong to whichever term was last saved. The correct
-    // term's marks (if any) are applied separately below by loadOneScores.
-    if (stored && stored.length > 0) return stored.map(l=>({name:l.name, scores:blankScores()}));
+    // Only reset scores here — since those belong to whichever term was last
+    // saved — but keep every other field (name, admNo, etc.) intact. The
+    // correct term's marks (if any) are applied separately below by loadOneScores.
+    if (stored && stored.length > 0) return stored.map(l=>({...l, scores:blankScores()}));
     // Fall back to initial data only for 2026 (seed year)
     if (Number(year) <= 2026) {
       const base = (INITIAL_LEARNERS[gr]||{})[str||""]||[];
-      return base.map(l=>({name:l.name, scores:blankScores()}));
+      return base.map(l=>({...l, scores:blankScores()}));
     }
     // In 2027+ with no stored data, start empty
     return [];
@@ -2568,11 +2874,6 @@ function App() {
   async function loadOneScores(lrns, gr, str) {
     const sk = storageKey(gr, str, term, year);
     let stored = await loadShared(sk, null);
-    // First time opening Mid Term 2 / 2026 for this class (nothing saved yet)?
-    // Pre-fill with the marks transferred from the school's Excel workbook.
-    if (!stored && term===SEED_TERM && year===SEED_YEAR && Number(year)<=2026) {
-      stored = (SEED_SCORES[gr]||{})[str] || null;
-    }
     if (!stored) return lrns;
     return lrns.map(l=>{
       const m=stored.find(s=>s.name===l.name);
@@ -2616,7 +2917,7 @@ function App() {
       const classList = classesConfig[grade] || [""];
       let ok = true;
       for (const s of classList) {
-        const data = (learnersByStream[s]||[]).map(l=>({name:l.name,scores:l.scores}));
+        const data = (learnersByStream[s]||[]).map(l=>({name:l.name,admNo:l.admNo||"",gender:l.gender||"",scores:l.scores}));
         ok = await saveShared(learnersKey(grade,s), data) && ok;
         ok = await saveShared(storageKey(grade,s,term,year), data) && ok;
       }
@@ -2642,7 +2943,7 @@ function App() {
     const split = isSplitGrade(grade);
     const oldStream = learner.stream || stream;
     const newStream = split ? (payload.stream || oldStream) : "";
-    const updated = { name: payload.name, scores: payload.scores };
+    const updated = { name: payload.name, admNo: payload.admNo||"", gender: payload.gender||"", scores: payload.scores };
 
     if (split && newStream !== oldStream) {
       // Move learner from old stream's list to the new one
@@ -2659,12 +2960,12 @@ function App() {
     setDirty(true);
   }
 
-  function handleAddLearner(name, streamSel) {
+  function handleAddLearner(name, streamSel, admNo, gender) {
     const split = isSplitGrade(grade);
     const targetStream = split ? (streamSel || stream) : "";
     const lrns = getLearnersByStream(targetStream);
     if (lrns.find(l=>l.name===name)){setShowAddLearner(false);return;}
-    setLearnersByStream(targetStream, [...lrns,{name,scores:blankScores()}]);
+    setLearnersByStream(targetStream, [...lrns,{name,admNo:admNo||"",gender:gender||"",scores:blankScores()}]);
     setShowAddLearner(false);
     setDirty(true);
   }
@@ -2693,8 +2994,8 @@ function App() {
 <style>
   body{margin:0;background:#fff;font-family:Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   .no-print{display:none!important;}
-  .report-card{page-break-after:always;}
-  .print-classlist{page-break-after:always;}
+  .report-card{page-break-inside:avoid;break-inside:avoid;}
+  .report-card + .report-card{page-break-before:always;break-before:page;}
   @page{size:A4 ${isList?"landscape":"portrait"};margin:0.7cm;}
   table{border-collapse:collapse;}
   #__printBtnBar{position:sticky;top:0;background:#111;padding:10px;text-align:center;z-index:999;}
@@ -2702,25 +3003,35 @@ function App() {
 </style>
 </head><body>
 <div id="__printBtnBar" class="no-print"><button onclick="window.print()">🖨 Print This Page</button></div>
-${node.innerHTML}
+${(node.classList && node.classList.contains("report-card")) ? node.outerHTML : node.innerHTML}
 ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.print();},300);};</scr"+"ipt>" : ""}
 </body></html>`;
   }
 
-  function handleDownload(mode, filename) {
+  const [pdfBusy, setPdfBusy] = useState(false);
+  async function handleDownload(mode, filename) {
     const isList = mode==="blank" || mode==="filled";
     const node = findPrintNode(mode);
     if (!node) { alert("That report isn't ready yet — make sure marks have been entered, then try again."); return; }
-    const html = buildPrintableHTML(node, isList, filename, false);
-    const blob = new Blob([html], {type:"text/html"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${filename}.html`;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 3000);
+    if (typeof html2pdf === "undefined") {
+      alert("PDF generator hasn't finished loading yet — check your internet connection and try again in a moment.");
+      return;
+    }
+    setPdfBusy(true);
+    try {
+      await html2pdf().set({
+        margin: 0.3,
+        filename: `${filename}.pdf`,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        jsPDF: { unit: "in", format: "a4", orientation: isList ? "landscape" : "portrait" },
+        pagebreak: { mode: ["css", "legacy"] }
+      }).from(node).save();
+    } catch (e) {
+      alert("Could not generate the PDF. Please try again — if it keeps failing, use the 🖨 Print button instead and choose 'Save as PDF' from the print dialog.");
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
   // Opens the printable content in a new tab and triggers the print dialog
@@ -2745,8 +3056,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       return;
     }
     const list = getLearnersByStream(stream);
-    const header = ["Name", ...SUBJECTS];
-    const rows = [header, ...list.map(l=>[l.name, ...SUBJECTS.map(s=>l.scores[s]||"")])];
+    const header = ["Assessment No.","Name", ...SUBJECTS];
+    const rows = [header, ...list.map(l=>[l.admNo||"", l.name, ...SUBJECTS.map(s=>l.scores[s]||"")])];
     downloadCSV(rows, `${getStreamLabel(grade,stream).replace(/\s/g,"_")}_MarksTemplate.csv`);
   }
 
@@ -2761,6 +3072,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       const rows = parseCSVText(text);
       if (rows.length < 2) { alert("That file doesn't look like a valid CSV with a header row and data."); return; }
       const header = rows[0].map(h=>h.trim().toUpperCase());
+      const admIdx = header.findIndex(h=>h==="ASSESSMENT NO."||h==="ASSESSMENT NO"||h==="ADM NO."||h==="ADM NO");
+      const nameIdx = header.findIndex(h=>h==="NAME");
       const subjIdx = {};
       SUBJECTS.forEach(s=>{
         const idx = header.findIndex(h=>h===s.toUpperCase());
@@ -2770,9 +3083,10 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       let updated=0, added=0;
       for (let r=1;r<rows.length;r++){
         const row = rows[r];
-        const rawName = (row[0]||"").trim();
+        const rawName = (row[nameIdx>-1?nameIdx:0]||"").trim();
         if (!rawName) continue;
         const name = rawName.toUpperCase();
+        const admNo = admIdx>-1 ? (row[admIdx]||"").trim() : "";
         const newScores = {};
         let any=false;
         SUBJECTS.forEach(s=>{
@@ -2784,10 +3098,13 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             }
           }
         });
-        if (!any) continue;
         const idx = list.findIndex(l=>l.name===name);
-        if (idx>-1) { list[idx] = {...list[idx], scores:{...list[idx].scores,...newScores}}; updated++; }
-        else { list.push({name, scores:{...blankScores(),...newScores}}); added++; }
+        if (idx>-1) {
+          list[idx] = {...list[idx], admNo: admNo||list[idx].admNo||"", scores: any?{...list[idx].scores,...newScores}:list[idx].scores};
+          if (any) updated++;
+        } else if (any || admNo) {
+          list.push({name, admNo, scores:{...blankScores(),...newScores}}); added++;
+        }
       }
       setLearnersByStream(stream, list);
       setDirty(true);
@@ -2805,14 +3122,14 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
     }
     const list = getLearnersByStream(stream);
     const rows = list.map(l => {
-      const row = { "Name": l.name };
+      const row = { "Assessment No.": l.admNo||"", "Name": l.name };
       SUBJECTS.forEach(s => { row[s] = l.scores[s] || ""; });
       return row;
     });
     const ws = rows.length
       ? XLSX.utils.json_to_sheet(rows)
-      : XLSX.utils.aoa_to_sheet([["Name", ...SUBJECTS]]);
-    ws["!cols"] = [{wch:26}, ...SUBJECTS.map(()=>({wch:10}))];
+      : XLSX.utils.aoa_to_sheet([["Assessment No.","Name", ...SUBJECTS]]);
+    ws["!cols"] = [{wch:14},{wch:26}, ...SUBJECTS.map(()=>({wch:10}))];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Marks Template");
     XLSX.writeFile(wb, `${getStreamLabel(grade,stream).replace(/\s/g,"_")}_MarksTemplate.xlsx`);
@@ -2832,6 +3149,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       if (!data.length) { alert("That workbook doesn't have any rows to import."); return; }
       const headerKeys = Object.keys(data[0]);
       const nameKey = headerKeys.find(h => h.trim().toUpperCase()==="NAME") || headerKeys[0];
+      const admKey = headerKeys.find(h => ["ASSESSMENT NO.","ASSESSMENT NO","ADM NO.","ADM NO"].includes(h.trim().toUpperCase()));
       const subjKey = {};
       SUBJECTS.forEach(s=>{
         const found = headerKeys.find(h => h.trim().toUpperCase()===s.toUpperCase());
@@ -2843,6 +3161,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
         const rawName = String(row[nameKey]||"").trim();
         if (!rawName) return;
         const name = rawName.toUpperCase();
+        const admNo = admKey ? String(row[admKey]||"").trim() : "";
         const newScores = {};
         let any=false;
         SUBJECTS.forEach(s=>{
@@ -2854,10 +3173,13 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             }
           }
         });
-        if (!any) return;
         const idx = list.findIndex(l=>l.name===name);
-        if (idx>-1) { list[idx] = {...list[idx], scores:{...list[idx].scores,...newScores}}; updated++; }
-        else { list.push({name, scores:{...blankScores(),...newScores}}); added++; }
+        if (idx>-1) {
+          list[idx] = {...list[idx], admNo: admNo||list[idx].admNo||"", scores: any?{...list[idx].scores,...newScores}:list[idx].scores};
+          if (any) updated++;
+        } else if (any || admNo) {
+          list.push({name, admNo, scores:{...blankScores(),...newScores}}); added++;
+        }
       });
       setLearnersByStream(stream, list);
       setDirty(true);
@@ -2876,7 +3198,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       : (gradeCombined.perStream[currentClassList[0]] || []);
     const rows = list.map((l,i) => {
       const og = l.total>0?getGrade(l.avg):null;
-      const row = { "#": i+1, "Name": l.name, "Stream": l.stream||grade };
+      const row = { "#": i+1, "Assessment No.": l.admNo||"", "Name": l.name, "Stream": l.stream||grade };
       SUBJECTS.forEach(s => { row[s] = l.scores[s] || ""; });
       row["Total"] = l.total||"";
       row["Avg%"] = l.total?l.avg:"";
@@ -2886,13 +3208,13 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       if (split) row["Grade Rank"] = l.overallRank||"";
       return row;
     });
-    const meanRow = { "#":"", "Name":"CLASS MEAN", "Stream":"" };
+    const meanRow = { "#":"", "Assessment No.":"", "Name":"CLASS MEAN", "Stream":"" };
     SUBJECTS.forEach(s => { meanRow[s] = means[s]; });
     meanRow["Total"]=""; meanRow["Avg%"]=""; meanRow["Points"]=""; meanRow["Band"]=""; meanRow["Class Rank"]="";
     if (split) meanRow["Grade Rank"]="";
     rows.push(meanRow);
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{wch:4},{wch:26},{wch:10}, ...SUBJECTS.map(()=>({wch:9})), {wch:8},{wch:8},{wch:8},{wch:8},{wch:10},{wch:10}];
+    ws["!cols"] = [{wch:4},{wch:14},{wch:26},{wch:10}, ...SUBJECTS.map(()=>({wch:9})), {wch:8},{wch:8},{wch:8},{wch:8},{wch:10},{wch:10}];
     const wb = XLSX.utils.book_new();
     const lbl = split&&viewMode==="combined"?`${gradeLabel.replace(/\s/g,"")}_All`:getStreamLabel(grade,stream).replace(/\s/g,"_");
     XLSX.utils.book_append_sheet(wb, ws, lbl.slice(0,28));
@@ -2901,7 +3223,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
 
   function handleDownloadCSV() {
     const split = isSplitGrade(grade);
-    const header = ["#","Name","Stream",...SUBJECTS,"Total","Avg%","Points","Band","Class Rank"];
+    const header = ["#","Assessment No.","Name","Stream",...SUBJECTS,"Total","Avg%","Points","Band","Class Rank"];
     if (split) header.push("Grade Rank");
     const rows = [header];
     const list = split
@@ -2911,14 +3233,14 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
       : (gradeCombined.perStream[currentClassList[0]] || []);
     list.forEach((l,i)=>{
       const og = l.total>0?getGrade(l.avg):null;
-      const row = [i+1, l.name, l.stream||grade, ...SUBJECTS.map(s=>l.scores[s]||""),
+      const row = [i+1, l.admNo||"", l.name, l.stream||grade, ...SUBJECTS.map(s=>l.scores[s]||""),
         l.total||"", l.total?l.avg:"", l.total?l.points:"",
         og?og.sub:"", l.total?l.rank:""];
       if (split) row.push(l.overallRank||"");
       rows.push(row);
     });
     // Add means row
-    const mr = ["","CLASS MEAN","",...SUBJECTS.map(s=>means[s]),"","","","",""];
+    const mr = ["","","CLASS MEAN","",...SUBJECTS.map(s=>means[s]),"","","","",""];
     if (split) mr.push("");
     rows.push(mr);
     const lbl = split&&viewMode==="combined"?`${gradeLabel.replace(/\s/g,"")}_All`:getStreamLabel(grade,stream).replace(/\s/g,"_");
@@ -2945,7 +3267,11 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
   if (showTeacherAdmin) return <TeacherAdminScreen onDone={() => { setShowTeacherAdmin(false); }} />;
   if (showSchoolSettings) return <SchoolSettingsScreen
     schoolName={schoolName} schoolCounty={schoolCounty} schoolMotto={schoolMotto}
-    onSave={({name,county,motto})=>{ setSchoolName(name); setSchoolCounty(county); setSchoolMotto(motto); }}
+    schoolPOBox={schoolPOBox} schoolPhone={schoolPhone} schoolEmail={schoolEmail}
+    onSave={({name,county,motto,poBox,phone,email})=>{
+      setSchoolName(name); setSchoolCounty(county); setSchoolMotto(motto);
+      setSchoolPOBox(poBox); setSchoolPhone(phone); setSchoolEmail(email);
+    }}
     onDone={() => setShowSchoolSettings(false)} />;
   if (showManageClasses) return <ManageClassesScreen
     classesConfig={classesConfig}
@@ -2969,13 +3295,13 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
         onDone={async()=>{
           setShowWizard(false);
           const cfg = await loadShared("sision_classes_config", null);
-          setClassesConfig(cfg && Object.keys(cfg).length ? cfg : {"7":[""],"8":[""],"9":[""]});
+          setClassesConfig(await cleanClassesConfig(normalizeClassesConfig(cfg)));
         }}
         onSkip={()=>setShowWizard(false)}
       />}
       <div style={S.header}>
-        <div style={S.schoolName}>{(schoolName||"Kituu Junior School").toUpperCase()}</div>
-        <div style={S.schoolSub}>{schoolCounty||"Samburu"} · Junior Secondary School</div>
+        <div style={S.schoolName}>{(schoolName||"Your School Name").toUpperCase()}</div>
+        <div style={S.schoolSub}>{schoolCounty||""}</div>
         <div style={S.systemTitle}>CBC Learner Ranking & Report Card System</div>
         <div style={{marginTop:6,fontSize:12,color:"#ccc"}}>
           Logged in as <b>{userSession.name}</b> ({userSession.role === "admin" ? "Administrator" : "Class Teacher"})
@@ -3011,9 +3337,9 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
               const opts = classesConfig[g]||[""];
               setStream(opts[0] || "");
             }}>
-              {allowedGrades.includes("7") && <option value="7">Grade 7</option>}
-              {allowedGrades.includes("8") && <option value="8">Grade 8</option>}
-              {allowedGrades.includes("9") && <option value="9">Grade 9</option>}
+              {(isAdmin || allowedGrades.includes("7")) && <option value="7">Grade 7</option>}
+              {(isAdmin || allowedGrades.includes("8")) && <option value="8">Grade 8</option>}
+              {(isAdmin || allowedGrades.includes("9")) && <option value="9">Grade 9</option>}
             </select>
           </div>}
           {homeSplit && (
@@ -3038,7 +3364,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
           <div style={S.field}>
             <label style={S.label}>Term / Exam</label>
             <select style={S.select} value={term} onChange={e=>setTerm(e.target.value)}>
-              {TERMS.map(t=><option key={t}>{t}</option>)}
+              {termsFor(grade).map(t=><option key={t}>{t}</option>)}
             </select>
           </div>
           <div style={S.field}>
@@ -3084,14 +3410,14 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
     return (
       <div style={S.page}>
         <div style={S.header}>
-          <div style={S.schoolName}>{(schoolName||"Kituu Junior School").toUpperCase()}</div>
+          <div style={S.schoolName}>{(schoolName||"Your School Name").toUpperCase()}</div>
           <div style={S.systemTitle}>{subjectSession.name}</div>
         </div>
         <div style={S.homeCard}>
           <h2 style={S.cardTitle}>Which class are you entering marks for?</h2>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {subjectSession.classes.map((c,i)=>(
-              <button key={i} style={S.btn} onClick={()=>{ setSubjectClass(c); proceedAfterClass(subjectSession, c); }}>
+            {resolveSubjectClasses(subjectSession.classes).map((c,i)=>(
+              <button key={i} style={S.btn} onClick={()=>{ markSubjectDirty(false); setSubjectClass(c); proceedAfterClass(subjectSession, c); }}>
                 Grade {c.grade}{c.stream?` ${c.stream}`:""}
               </button>
             ))}
@@ -3111,7 +3437,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
     return (
       <div style={S.page}>
         <div style={S.header}>
-          <div style={S.schoolName}>{(schoolName||"Kituu Junior School").toUpperCase()}</div>
+          <div style={S.schoolName}>{(schoolName||"Your School Name").toUpperCase()}</div>
           <div style={S.systemTitle}>{subjectSession.name} · {clsLabel}</div>
         </div>
         <div style={S.homeCard}>
@@ -3142,19 +3468,19 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
           <div style={S.topTitle}>{subjectSession.name} · {subjectChoice} · {clsLabel}</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
             {subjectSession.subjects.length > 1 && (
-              <select style={S.select} value={subjectChoice} onChange={e=>setSubjectChoice(e.target.value)}>
+              <select style={S.select} value={subjectChoice} onChange={e=>{ if(!okToLeaveSubjectList()) return; setSubjectChoice(e.target.value); }}>
                 {subjectSession.subjects.map(s=><option key={s} value={s}>{s}</option>)}
               </select>
             )}
-            <select style={S.select} value={subjectTerm} onChange={e=>setSubjectTerm(e.target.value)}>
-              {TERMS.map(t=><option key={t} value={t}>{t}</option>)}
+            <select style={S.select} value={subjectTerm} onChange={e=>{ if(!okToLeaveSubjectList()) return; setSubjectTerm(e.target.value); }}>
+              {termsFor(subjectClass.grade).map(t=><option key={t} value={t}>{t}</option>)}
             </select>
-            <select style={S.select} value={subjectYear} onChange={e=>setSubjectYear(e.target.value)}>
+            <select style={S.select} value={subjectYear} onChange={e=>{ if(!okToLeaveSubjectList()) return; setSubjectYear(e.target.value); }}>
               {YEARS.map(y=><option key={y} value={y}>{y}</option>)}
             </select>
             <button style={{...S.ghostBtn,...(subjectSaved?{background:"#e8f5e9",color:"#2e7d32",borderColor:"#2e7d32"}:{})}}
               onClick={uploadSubjectScores} disabled={subjectSaving || subjectLoading || subjectNotConnected}>
-              {subjectSaving?"Uploading…":(subjectSaved?"✓ Uploaded!":"⬆ Upload")}
+              {subjectSaving?"Uploading…":(subjectSaved?"✓ Uploaded!":(subjectDirty?"⬆ Upload (unsaved)":"⬆ Upload"))}
             </button>
           </div>
         </div>
@@ -3176,6 +3502,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
               <thead>
                 <tr style={{borderBottom:"2px solid #000"}}>
                   <th style={{textAlign:"left",padding:"8px 6px"}}>#</th>
+                  <th style={{textAlign:"left",padding:"8px 6px"}}>Assessment No.</th>
                   <th style={{textAlign:"left",padding:"8px 6px"}}>Name</th>
                   <th style={{textAlign:"left",padding:"8px 6px"}}>{subjectChoice} Score</th>
                   <th style={{textAlign:"left",padding:"8px 6px"}}>Level</th>
@@ -3186,13 +3513,16 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
                   const g = getGrade(row.score);
                   return (
                     <tr key={row.name} style={{borderBottom:"1px solid #ddd"}}>
-                      <td style={{padding:"6px"}}>{i+1}</td>
+                      <td style={{padding:"6px",color:"#888"}}>{i+1}</td>
+                      <td style={{padding:"6px",color:"#888"}}>{row.admNo||"—"}</td>
                       <td style={{padding:"6px",fontWeight:600}}>{row.name}</td>
                       <td style={{padding:"6px"}}>
                         <input type="number" min="0" max="100" style={{...S.input,width:80}}
                           value={row.score}
                           onChange={e=>{
-                            const v = e.target.value;
+                            let v = e.target.value;
+                            if (v!=="" && !isNaN(v)) { v = Math.max(0, Math.min(100, Number(v))); }
+                            markSubjectDirty(true);
                             setSubjectList(list => list.map((r,idx)=> idx===i ? {...r, score:v} : r));
                           }} />
                       </td>
@@ -3205,7 +3535,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             <div style={{marginTop:16}}>
               <button style={{...S.ghostBtn,...(subjectSaved?{background:"#e8f5e9",color:"#2e7d32",borderColor:"#2e7d32"}:{})}}
                 onClick={uploadSubjectScores} disabled={subjectSaving || subjectLoading}>
-                {subjectSaving?"Uploading…":(subjectSaved?"✓ Uploaded!":"⬆ Upload")}
+                {subjectSaving?"Uploading…":(subjectSaved?"✓ Uploaded!":(subjectDirty?"⬆ Upload (unsaved)":"⬆ Upload"))}
               </button>
             </div>
           </div>
@@ -3253,6 +3583,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             label={label}
             term={term}
             year={year}
+            schoolName={schoolName}
+            schoolCounty={schoolCounty}
             onClose={()=>setShowAnalysis(false)}
           />
         )}
@@ -3269,7 +3601,7 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
           </div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             <button style={S.ghostBtn} onClick={()=>setShowHistory(true)}>📂 History</button>
-            <button style={S.ghostBtn} onClick={()=>setShowComment(true)}>💬 {comment?"Edit":"Add"} Class Comment</button>
+            <button style={{...S.ghostBtn,...(commentSaved?{background:"#e8f5e9",color:"#2e7d32",borderColor:"#2e7d32"}:{})}} onClick={()=>setShowComment(true)}>{commentSaved?"✓ Comment saved":`💬 ${comment?"Edit":"Add"} Class Comment`}</button>
             <input style={{...S.input,maxWidth:160,fontSize:12}} placeholder="🔍 Search learner…"
               value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} />
             <button style={{...S.ghostBtn,...(saved?{background:"#e8f5e9",color:"#2e7d32",borderColor:"#2e7d32"}:{})}}
@@ -3278,11 +3610,11 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
             <button style={S.ghostBtn} onClick={()=>setSortMode(sortMode==="rank"?"name":"rank")}>
               {sortMode==="rank" ? "🔤 Sort A–Z" : "🏆 Sort by Rank"}
             </button>
-            <button style={S.ghostBtn} onClick={()=>handleDownload("blank",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_BlankList`)}>⬇ Download Blank Class List</button>
+            <button style={S.ghostBtn} disabled={pdfBusy} onClick={()=>handleDownload("blank",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_BlankList`)}>{pdfBusy?"Generating PDF…":"⬇ Download Blank Class List"}</button>
             <button style={S.ghostBtn} onClick={()=>handlePrint("blank",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_BlankList`)}>🖨 Print Blank Class List</button>
-            {hasScores && <button style={S.ghostBtn} onClick={()=>handleDownload("filled",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_ResultsList`)}>⬇ Download Results List</button>}
+            {hasScores && <button style={S.ghostBtn} disabled={pdfBusy} onClick={()=>handleDownload("filled",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_ResultsList`)}>{pdfBusy?"Generating PDF…":"⬇ Download Results List"}</button>}
             {hasScores && <button style={S.ghostBtn} onClick={()=>handlePrint("filled",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_ResultsList`)}>🖨 Print Results List</button>}
-            {hasScores && <button style={S.ghostBtn} onClick={()=>handleDownload("all",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_AllReportForms`)}>⬇ Download All Report Forms</button>}
+            {hasScores && <button style={S.ghostBtn} disabled={pdfBusy} onClick={()=>handleDownload("all",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_AllReportForms`)}>{pdfBusy?"Generating PDF… (may take a moment for a full class)":"⬇ Download All Report Forms"}</button>}
             {hasScores && <button style={S.ghostBtn} onClick={()=>handlePrint("all",`Grade${grade}${viewMode==="combined"?"_Combined":(stream?"_"+stream:"")}_AllReportForms`)}>🖨 Print All Report Forms</button>}
             <button style={S.ghostBtn} onClick={handleDownloadCSV}>⬇ CSV</button>
             <button style={S.ghostBtn} onClick={handleDownloadTemplate}>⬇ Marks Template (CSV)</button>
@@ -3343,7 +3675,9 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
                 <th style={S.th}>Class Rank</th>
                 {split && <th style={S.th}>Gr. Rank</th>}
                 {viewMode==="combined" && <th style={S.th}>Stream</th>}
+                <th style={{...S.th,textAlign:"left",minWidth:80}}>Assm. No.</th>
                 <th style={{...S.th,textAlign:"left",minWidth:140}}>Name</th>
+                <th style={S.th}>Sex</th>
                 {SUBJECTS.map(s=><th key={s} style={S.th}>{s}</th>)}
                 <th style={S.th}>Total</th>
                 <th style={S.th}>Avg</th>
@@ -3368,12 +3702,15 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
                     {viewMode==="combined" && (
                       <td style={{...S.tdC,borderRight:"1px solid #e0e0e0",fontSize:10}}>{l.stream}</td>
                     )}
+                    <td style={{...S.tdC,borderRight:"1px solid #e0e0e0",fontSize:11}}>{l.admNo||"–"}</td>
                     <td style={{...S.td,fontWeight:700,borderRight:"1px solid #e0e0e0"}}>{l.name}</td>
+                    <td style={{...S.tdC,borderRight:"1px solid #e0e0e0",fontSize:11}}>{l.gender||"–"}</td>
                     {SUBJECTS.map(sub=>{
-                      const g=getGrade(l.scores[sub]);
+                      const tot = subjectTotal(l.scores, sub);
+                      const g=getGrade(tot);
                       return (
                         <td key={sub} style={{...S.tdC,borderRight:"1px solid #e8e8e8",fontSize:11}}>
-                          <div style={{fontWeight:700}}>{l.scores[sub]||"–"}</div>
+                          <div style={{fontWeight:700}}>{tot!==""?tot:"–"}</div>
                           {g&&<div style={{fontSize:8,color:"#444",fontWeight:700}}>{g.sub}</div>}
                         </td>
                       );
@@ -3384,30 +3721,50 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
                     <td style={{...S.tdC,fontWeight:700,fontSize:10,borderRight:"1px solid #e0e0e0"}}>{og?og.sub:"–"}</td>
                     <td style={{...S.tdC,whiteSpace:"nowrap"}}>
                       <button style={S.actionBtn} title="Edit" onClick={()=>setEditingLearner({...l,stream:l.stream||stream})}>✏️</button>
-                      {l.total>0&&<button style={S.actionBtn} title="Download report form" onClick={()=>handleDownload(l,`${l.name.replace(/\s+/g,"_")}_ReportForm`)}>⬇</button>}
+                      {l.total>0&&<button style={S.actionBtn} disabled={pdfBusy} title="Download report form" onClick={()=>handleDownload(l,`${l.name.replace(/\s+/g,"_")}_ReportForm`)}>⬇</button>}
                       {l.total>0&&<button style={S.actionBtn} title="Print report form" onClick={()=>handlePrint(l,`${l.name.replace(/\s+/g,"_")}_ReportForm`)}>🖨</button>}
                       <button style={S.actionBtn} title="Remove" onClick={()=>handleDeleteLearner(l.name,l.stream||stream)}>🗑️</button>
                     </td>
                   </tr>
                 );
               })}
-              {/* MEANS ROW */}
-              {hasScores && (
+              {/* MEANS ROWS */}
+              {hasScores && (()=>{
+                const metaSpan = 4 + (split?1:0) + (viewMode==="combined"?1:0); // Class Rank[+Gr.Rank][+Stream]+Assm.No+Name+Sex
+                return <>
                 <tr style={{background:"#e8e8e8",borderTop:"2px solid #000",fontWeight:700}}>
-                  <td style={S.tdC} colSpan={split?(viewMode==="combined"?4:3):2}>CLASS MEAN</td>
+                  <td style={S.tdC} colSpan={metaSpan}>CLASS MEAN ({means["_boysCount"]||0}B / {means["_girlsCount"]||0}G)</td>
                   {SUBJECTS.map(sub=>(
                     <td key={sub} style={{...S.tdC,fontSize:11}}>
                       <div style={{fontWeight:700}}>{means[sub]}</div>
                       {means[sub]!=="–"&&<div style={{fontSize:8,color:"#444"}}>{getGrade(means[sub])?.sub||""}</div>}
                     </td>
                   ))}
-                  <td colSpan={6} style={{...S.tdC,fontSize:11}}>
+                  <td colSpan={5} style={{...S.tdC,fontSize:11}}>
                     Class Mean: <b>{means["_meanTotal"]}/{means["_maxTotal"]}</b> &nbsp;(Avg: <b>{means["_classMean"]!=="–"?means["_classMean"]+"%":"–"}</b>)
                   </td>
                 </tr>
-              )}
+                {means["_boysCount"]>0 && (
+                  <tr style={{background:"#eef4fb",fontWeight:600}}>
+                    <td style={S.tdC} colSpan={metaSpan}>BOYS MEAN</td>
+                    {SUBJECTS.map(sub=><td key={sub} style={{...S.tdC,fontSize:11}}>{means[sub+"_M"]}</td>)}
+                    <td colSpan={5} style={{...S.tdC,fontSize:11}}>Boys Avg: <b>{means["_boysMean"]!=="–"?means["_boysMean"]+"%":"–"}</b></td>
+                  </tr>
+                )}
+                {means["_girlsCount"]>0 && (
+                  <tr style={{background:"#fdeef3",fontWeight:600}}>
+                    <td style={S.tdC} colSpan={metaSpan}>GIRLS MEAN</td>
+                    {SUBJECTS.map(sub=><td key={sub} style={{...S.tdC,fontSize:11}}>{means[sub+"_F"]}</td>)}
+                    <td colSpan={5} style={{...S.tdC,fontSize:11}}>Girls Avg: <b>{means["_girlsMean"]!=="–"?means["_girlsMean"]+"%":"–"}</b></td>
+                  </tr>
+                )}
+                </>;
+              })()}
             </tbody>
           </table>
+        </div>
+        <div style={{fontSize:10.5,color:"#666",margin:"6px 2px 0",lineHeight:1.6}} className="no-print">
+          <b>Key:</b> {SUBJECTS.map(s=>`${s} = ${subjectKey(s)}`).join("  ·  ")}
         </div>
 
         {/* ── ALWAYS-RENDERED DOWNLOAD SOURCE (hidden) ──────────────────────
@@ -3422,7 +3779,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
               term={term} year={year} classTeacher={classTeacher}
               hasScores={false}
               overallTotal={overallTotal}
-              schoolName={schoolName} schoolCounty={schoolCounty}
+              schoolName={schoolName} schoolCounty={schoolCounty} schoolPOBox={schoolPOBox}
+              schoolMotto={schoolMotto} schoolPhone={schoolPhone} schoolEmail={schoolEmail}
             />
           </div>
           <div id="dl-filled-list">
@@ -3432,7 +3790,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
               term={term} year={year} classTeacher={classTeacher}
               hasScores={true}
               overallTotal={overallTotal}
-              schoolName={schoolName} schoolCounty={schoolCounty}
+              schoolName={schoolName} schoolCounty={schoolCounty} schoolPOBox={schoolPOBox}
+              schoolMotto={schoolMotto} schoolPhone={schoolPhone} schoolEmail={schoolEmail}
             />
           </div>
           <div id="dl-all-reports">
@@ -3445,7 +3804,8 @@ ${autoPrint ? "<scr"+"ipt>window.onload=function(){setTimeout(function(){window.
                 overallTotal={overallTotal}
                 subjectRanks={subjectRankMap[l.name]||{}}
                 examHistory={examHistoryMap[l.name]||[]}
-                schoolName={schoolName} schoolCounty={schoolCounty} schoolMotto={schoolMotto} />
+                schoolName={schoolName} schoolCounty={schoolCounty} schoolMotto={schoolMotto}
+                schoolPOBox={schoolPOBox} schoolPhone={schoolPhone} schoolEmail={schoolEmail} />
             ))}
           </div>
         </div>
@@ -3498,37 +3858,37 @@ const S = {
 };
 
 const RC = {
-  page:        {background:"#fff",color:"#000",width:"190mm",margin:"0 auto 30px",padding:"10mm 12mm",fontFamily:"Arial,sans-serif",fontSize:11,boxSizing:"border-box",border:"1px solid #888"},
-  header:      {borderBottom:"3px solid #000",marginBottom:8,paddingBottom:7,textAlign:"center"},
-  schoolName:  {fontSize:20,fontWeight:900,letterSpacing:1,color:"#000"},
-  schoolSub:   {fontSize:10,color:"#444"},
-  reportTitle: {fontSize:12,fontWeight:700,marginTop:4,color:"#000"},
-  infoRow:     {display:"flex",gap:8,flexWrap:"wrap",background:"#f2f2f2",padding:"7px 10px",borderRadius:4,marginBottom:8,border:"1px solid #ccc"},
+  page:        {background:"#fff",color:"#000",width:"190mm",minHeight:"160mm",margin:"0 auto 4mm",padding:"7mm 8mm",fontFamily:"Arial,sans-serif",fontSize:11,boxSizing:"border-box",border:"1px solid #888"},
+  header:      {borderBottom:"3px solid #000",marginBottom:6,paddingBottom:5,textAlign:"center"},
+  schoolName:  {fontSize:18,fontWeight:900,letterSpacing:1,color:"#000"},
+  schoolSub:   {fontSize:9.5,color:"#444"},
+  reportTitle: {fontSize:11.5,fontWeight:700,marginTop:3,color:"#000"},
+  infoRow:     {display:"flex",gap:6,flexWrap:"wrap",background:"#f2f2f2",padding:"5px 8px",borderRadius:4,marginBottom:6,border:"1px solid #ccc"},
   infoBlock:   {display:"flex",gap:4,alignItems:"center",flex:1},
-  infoLabel:   {fontWeight:800,fontSize:9,color:"#444",textTransform:"uppercase"},
-  infoVal:     {fontWeight:700,fontSize:11,color:"#000"},
-  sectionTitle:{fontWeight:900,fontSize:10,letterSpacing:1,color:"#000",borderBottom:"2px solid #000",paddingBottom:2,marginBottom:5,textTransform:"uppercase"},
-  table:       {width:"100%",borderCollapse:"collapse",marginBottom:8},
-  th:          {background:"#000",color:"#fff",padding:"5px 7px",fontWeight:700,fontSize:10,textAlign:"left",border:"1px solid #888"},
-  thC:         {background:"#000",color:"#fff",padding:"5px 7px",fontWeight:700,fontSize:10,textAlign:"center",border:"1px solid #888"},
-  td:          {padding:"5px 7px",border:"1px solid #ddd",color:"#000"},
-  tdC:         {padding:"5px 7px",border:"1px solid #ddd",textAlign:"center",color:"#000"},
-  codeBadge:   {fontWeight:900,fontSize:11,color:"#000",border:"1.5px solid #000",borderRadius:3,padding:"1px 5px"},
-  summaryBox:  {display:"flex",border:"2px solid #000",overflow:"hidden",marginBottom:10},
-  summaryItem: {flex:1,padding:"7px 5px",textAlign:"center",borderRight:"1px solid #bbb"},
-  sumLabel:    {fontSize:8,color:"#555",textTransform:"uppercase",letterSpacing:0.5},
-  sumVal:      {fontSize:14,fontWeight:900,color:"#000"},
-  bottomRow:   {display:"flex",gap:10,marginBottom:8},
+  infoLabel:   {fontWeight:800,fontSize:8.5,color:"#444",textTransform:"uppercase"},
+  infoVal:     {fontWeight:700,fontSize:10.5,color:"#000"},
+  sectionTitle:{fontWeight:900,fontSize:9.5,letterSpacing:1,color:"#000",borderBottom:"2px solid #000",paddingBottom:2,marginBottom:4,textTransform:"uppercase"},
+  table:       {width:"100%",borderCollapse:"collapse",marginBottom:6},
+  th:          {background:"#000",color:"#fff",padding:"3px 6px",fontWeight:700,fontSize:9.5,textAlign:"left",border:"1px solid #888"},
+  thC:         {background:"#000",color:"#fff",padding:"3px 6px",fontWeight:700,fontSize:9.5,textAlign:"center",border:"1px solid #888"},
+  td:          {padding:"3px 6px",border:"1px solid #ddd",color:"#000",fontSize:10.5},
+  tdC:         {padding:"3px 6px",border:"1px solid #ddd",textAlign:"center",color:"#000",fontSize:10.5},
+  codeBadge:   {fontWeight:900,fontSize:10.5,color:"#000",border:"1.5px solid #000",borderRadius:3,padding:"0px 5px"},
+  summaryBox:  {display:"flex",border:"2px solid #000",overflow:"hidden",marginBottom:7},
+  summaryItem: {flex:1,padding:"4px 4px",textAlign:"center",borderRight:"1px solid #bbb"},
+  sumLabel:    {fontSize:7.5,color:"#555",textTransform:"uppercase",letterSpacing:0.5},
+  sumVal:      {fontSize:13,fontWeight:900,color:"#000"},
+  bottomRow:   {display:"flex",gap:10,marginBottom:4},
   gradingKey:  {width:140,flexShrink:0},
-  keyTitle:    {fontWeight:900,fontSize:9,letterSpacing:0.5,color:"#000",borderBottom:"2px solid #000",paddingBottom:2,marginBottom:4,textTransform:"uppercase"},
-  kth:         {padding:"3px 5px",fontWeight:700,fontSize:8,textAlign:"center",border:"1px solid #000"},
-  ktd:         {padding:"3px 5px",textAlign:"center",fontSize:8,border:"1px solid #999",color:"#000"},
-  datesBox:    {flex:1,border:"1px solid #bbb",borderRadius:4,padding:"8px 10px"},
+  keyTitle:    {fontWeight:900,fontSize:8.5,letterSpacing:0.5,color:"#000",borderBottom:"2px solid #000",paddingBottom:2,marginBottom:3,textTransform:"uppercase"},
+  kth:         {padding:"2px 3px",fontWeight:700,fontSize:7.5,textAlign:"center",border:"1px solid #000"},
+  ktd:         {padding:"2px 3px",textAlign:"center",fontSize:7.5,border:"1px solid #999",color:"#000"},
+  datesBox:    {flex:1,border:"1px solid #bbb",borderRadius:4,padding:"5px 8px"},
   commentInline: {marginTop:6,paddingTop:6,borderTop:"1px dashed #999"},
   commentLabel: {fontSize:8,fontWeight:800,letterSpacing:0.5,color:"#333"},
   commentText: {fontSize:9.5,lineHeight:1.4,color:"#222",marginTop:2,fontStyle:"italic"},
-  datesLine:   {fontSize:10,color:"#000",marginBottom:6},
-  footer:      {textAlign:"center",fontSize:8,color:"#555",borderTop:"1px solid #bbb",paddingTop:5,marginTop:4},
+  datesLine:   {fontSize:9.5,color:"#000",marginBottom:4},
+  footer:      {textAlign:"center",fontSize:8,color:"#555",borderTop:"1px solid #bbb",paddingTop:4,marginTop:2},
 };
 
 const CL = {
@@ -3546,6 +3906,7 @@ const CL = {
 const M = {
   overlay: {position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999},
   box:     {background:"#fff",borderRadius:12,padding:24,maxWidth:480,width:"90%",boxShadow:"0 8px 32px rgba(0,0,0,0.18)",border:"1px solid #ccc"},
+  boxScroll: {background:"#fff",borderRadius:12,maxWidth:560,width:"92%",maxHeight:"88vh",display:"flex",flexDirection:"column",boxShadow:"0 8px 32px rgba(0,0,0,0.18)",border:"1px solid #ccc",overflow:"hidden"},
   title:   {fontWeight:800,fontSize:16,color:"#000",marginBottom:14,borderBottom:"2px solid #000",paddingBottom:7},
   grid:    {display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:11,marginBottom:18},
   field:   {display:"flex",flexDirection:"column",gap:4,marginBottom:10},
